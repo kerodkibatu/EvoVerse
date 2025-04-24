@@ -76,6 +76,22 @@ namespace EvoVerse
         {
             return (Math.Abs(Q - other.Q) + Math.Abs(R - other.R) + Math.Abs(-Q - R - (-other.Q - other.R))) / 2;
         }
+
+        public static IEnumerable<Hex> GetHexesInRange(Hex hex, int range)
+        {
+            for (int q = -range + hex.Q; q <= range + hex.Q; q++)
+            {
+                for (int r = Math.Max(-range + hex.R, -q - range + hex.Q); r <= Math.Min(range + hex.R, -q + range + hex.Q); r++)
+                {
+                    yield return new Hex(q, r);
+                }
+            }
+        }
+
+        public static int Distance(Hex sourceHex, Hex hex)
+        {
+            return sourceHex.Distance(hex);
+        }
     }
 
     /// <summary>

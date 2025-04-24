@@ -22,13 +22,16 @@ Color BackgroundColor = new(220, 248, 255, 255); // AliceBlue
 Color HoverOutlineColor = new(100, 110, 120, 255);
 Color BorderColor = new(150, 150, 150, 40); // Semi-transparent gray for border hexes
 
+// --- Fonts ---
+Font UIFont;
+
 // --- Cell Count Tracking ---
 const int MaxCellCountHistory = 1000; // Keep last 1000 data points
 List<int> CellCountHistory = new();
 
 // --- Grid Setup ---
 HexLayout Layout;
-WorldGrid WorldGrid;
+WorldGrid World;
 Hex HoveredHex = new(0, 0);
 Vector2 HexSize = new(30, 30);
 Vector2 GridOrigin = new(ScreenWidth / 2f, ScreenHeight / 2f);
@@ -49,9 +52,25 @@ Run(ScreenWidth, ScreenHeight, WindowTitle);
 void Init()
 {
     Layout = new HexLayout(HexLayout.Pointy, HexSize, GridOrigin);
-    WorldGrid = new WorldGrid(Layout, MapRadius);
-    WorldGrid.ClearAndReset(); // Start with a stem cell
+    World = new WorldGrid(Layout, MapRadius);
+    World.MorphogenManager.RegisterMorphogen(new Morphogen("T0", 10, new Color(255, 0, 0, 255)));
+    World.MorphogenManager.RegisterMorphogen(new Morphogen("T1", 10, new Color(0, 255, 0, 255)));
+    World.ClearAndReset(); // Start with a stem cell
     RL.SetTargetFPS(TargetFps);
+
+    // Load font for RayLib
+    string fontPathRaylib = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Fonts", "consola.ttf");
+    if (!System.IO.File.Exists(fontPathRaylib)) fontPathRaylib = "C:/Windows/Fonts/Arial.ttf"; // Fallback
+    
+    if (System.IO.File.Exists(fontPathRaylib))
+    {
+        UIFont = RL.LoadFont(fontPathRaylib);
+    }
+    else
+    {
+        UIFont = RL.GetFontDefault();
+        Console.WriteLine("Warning: Default font not found, using RayLib default font.");
+    }
 
     rlImGui.Setup(true);
     try
@@ -116,21 +135,11 @@ void Update()
 
     if (performUpdate)
     {
-        // Update morphogen field
-        WorldGrid.Update();
-        
-        // Update cells (movement, division)
-        UpdateCellDivision();
-        
-        // Update cell count history after each step
-        int currentCellCount = WorldGrid.GetAllOccupiedHexes().Count();
-        CellCountHistory.Add(currentCellCount);
-        
-        // Keep only the last MaxCellCountHistory points
-        if (CellCountHistory.Count > MaxCellCountHistory)
-        {
-            CellCountHistory.RemoveAt(0);
-        }
+        // Update World
+        World.Update();
+
+        // Update plot
+        UpdatePlot();
     }
 
     // --- Input Handling (Camera, Cell Placement) ---
@@ -139,7 +148,7 @@ void Update()
         HoveredHex = Layout.PixelToFractionalHex(mousePos).Round();
         HandleCameraControls();
         
-        HandleCellStateChanges();
+        HandleUserInteraction();
     }
     else
     {
@@ -147,40 +156,24 @@ void Update()
     }
 }
 
-void UpdateCellDivision()
+void UpdatePlot()
 {
-    if (RL.GetFrameTime() > 0.2f) return;
+    // Update cell count history after each step
+    int currentCellCount = World.GetAllOccupiedHexes().Count();
+    CellCountHistory.Add(currentCellCount);
 
-    var allCellsSnapshot = WorldGrid.GetAllCells().ToList();
-    var newCellsFromDivision = new List<Cell>();
-
-    foreach (var cell in allCellsSnapshot)
+    // Keep only the last MaxCellCountHistory points
+    if (CellCountHistory.Count > MaxCellCountHistory)
     {
-        Cell? currentCellInGrid = WorldGrid.GetCell(cell.Position);
-        if (currentCellInGrid == null || currentCellInGrid.Id != cell.Id)
-        {
-            continue;
-        }
-
-        Cell? newCell = cell.Update(WorldGrid);
-        if (newCell != null)
-        {
-            newCellsFromDivision.Add(newCell);
-        }
-    }
-
-    foreach (var newCell in newCellsFromDivision.DistinctBy(c => c.Position))
-    {
-        if (WorldGrid.IsWithinBounds(newCell.Position) && !WorldGrid.IsOccupied(newCell.Position))
-        {
-            WorldGrid.AddCell(newCell);
-        }
+        CellCountHistory.RemoveAt(0);
     }
 }
 
 bool IsInputCapturedByUI()
 {
-    return ImGui.GetIO().WantCaptureMouse || ImGui.GetIO().WantCaptureKeyboard;
+    return ImGui.GetIO().WantCaptureMouse ||
+        ImGui.GetIO().WantCaptureKeyboard ||
+        ImGui.GetIO().WantTextInput;
 }
 
 void HandleCameraControls()
@@ -212,10 +205,10 @@ void HandleCameraControls()
 void UpdateGridLayout()
 {
     Layout = new HexLayout(Layout.Orientation, HexSize, GridOrigin);
-    WorldGrid.UpdateLayout(Layout);
+    World.UpdateLayout(Layout);
 }
 
-void HandleCellStateChanges()
+void HandleUserInteraction()
 {
     bool isLeftClick = RL.IsMouseButtonPressed(MouseButton.Left);
     bool isShiftHeld = RL.IsKeyDown(KeyboardKey.LeftShift) || RL.IsKeyDown(KeyboardKey.RightShift);
@@ -231,9 +224,9 @@ void HandleCellStateChanges()
     }
     if (RL.IsKeyPressed(KeyboardKey.S))
     {
-        if (WorldGrid.IsWithinBounds(HoveredHex))
+        if (World.IsWithinBounds(HoveredHex))
         {
-            Cell? hoveredCell = WorldGrid.GetCell(HoveredHex);
+            Cell? hoveredCell = World.GetCell(HoveredHex);
             if (hoveredCell != null && hoveredCell.Type != CellType.None)
             {
                 selectedCellType = hoveredCell.Type;
@@ -244,7 +237,7 @@ void HandleCellStateChanges()
 
 void PlaceCellIfValid(CellType cellType)
 {
-    if (!WorldGrid.IsWithinBounds(HoveredHex)) return;
+    if (!World.IsWithinBounds(HoveredHex)) return;
 
     var hexesToModify = new List<Hex> { HoveredHex };
     
@@ -256,7 +249,7 @@ void PlaceCellIfValid(CellType cellType)
             for (int r = Math.Max(-brushSize, -q - brushSize); r <= Math.Min(brushSize, -q + brushSize); r++)
             {
                 var hex = HoveredHex + new Hex(q, r);
-                if (WorldGrid.IsWithinBounds(hex))
+                if (World.IsWithinBounds(hex))
                 {
                     hexesToModify.Add(hex);
                 }
@@ -267,7 +260,7 @@ void PlaceCellIfValid(CellType cellType)
     foreach (var hex in hexesToModify)
     {
         bool canPlace = false;
-        Cell? existingCell = WorldGrid.GetCell(hex);
+        Cell? existingCell = World.GetCell(hex);
 
         if (cellType == CellType.None)
         {
@@ -284,7 +277,7 @@ void PlaceCellIfValid(CellType cellType)
 
         if (canPlace)
         {
-            WorldGrid.PlaceCell(hex, cellType);
+            World.PlaceCell(hex, cellType);
         }
     }
 }
@@ -295,9 +288,9 @@ void DrawHexOutline(Hex hex, Color color, float borderWidth = 2f, float sizeMult
 
     // Create a temporary layout with adjusted size for the outline
     var tempLayout = new HexLayout(
-        WorldGrid.Layout.Orientation,
-        WorldGrid.Layout.Size * sizeMultiplier,
-        WorldGrid.Layout.Origin
+        World.Layout.Orientation,
+        World.Layout.Size * sizeMultiplier,
+        World.Layout.Origin
     );
     
     Vector2[] borderCorners = tempLayout.PolygonCorners(hex);
@@ -310,29 +303,46 @@ void DrawHexOutline(Hex hex, Color color, float borderWidth = 2f, float sizeMult
     }
 }
 
+void DrawMorphogen(Hex hex, Color color)
+{
+    foreach (var morphogen in World.MorphogenManager.Morphogens)
+    {
+        var strength = World.MorphogenManager.GetStrengthAtHex(hex, morphogen.ID);
+        var radius = 0.5f * strength * Layout.Size.X;
+        var alpha = (byte)(strength * 255);
+        RL.DrawCircleV(Layout.HexToPixel(hex), radius, new Color(color.R, color.G, color.B, alpha));
+    }
+}
+
 void Draw()
 {
     RL.ClearBackground(BackgroundColor);
 
     // --- 1. Draw Grid Lines ---
-    foreach (Hex hex in WorldGrid.GetHexesInRadius().Where(h => WorldGrid.Layout.IsInView(h)))
+    foreach (Hex hex in World.GetHexesInRadius().Where(World.Layout.IsInView))
     {
-        if (WorldGrid.GetCellType(hex) == CellType.None)
+        if (World.GetCellType(hex) == CellType.None)
         {
             DrawHexOutline(hex, BorderColor);
         }
     }
 
-    // --- 2. Draw Cells ---
-    var allCells = WorldGrid.GetAllCells().ToArray();
-    foreach (Cell cell in allCells.Where(c => WorldGrid.Layout.IsInView(c.Position)))
+    // --- 2. Draw Morphogens ---
+    foreach (var affectedHex in World.MorphogenManager.GetAffectedHexes())
+    {
+        DrawMorphogen(affectedHex, BorderColor);
+    }
+
+    // --- 3. Draw Cells ---
+    var allCells = World.GetAllCells().ToArray();
+    foreach (Cell cell in allCells.Where(c => World.Layout.IsInView(c.Position)))
     {
         var neighbors = allCells.Where(n => cell.Position.Distance(n.Position) <= 1).ToList();
-        cell.Draw(WorldGrid.Layout, HexSize.X * 0.75f, neighbors);
+        cell.Draw(World.Layout, HexSize.X * 0.75f, neighbors);
     }
 
     // --- 3. Draw Hover Outline ---
-    bool isHoverValid = !IsInputCapturedByUI() && WorldGrid.IsWithinBounds(HoveredHex);
+    bool isHoverValid = !IsInputCapturedByUI() && World.IsWithinBounds(HoveredHex);
     if (isHoverValid)
     {
         // Draw brush preview if in editing mode and brush size > 0
@@ -344,7 +354,7 @@ void Draw()
                 for (int r = Math.Max(-brushSize, -q - brushSize); r <= Math.Min(brushSize, -q + brushSize); r++)
                 {
                     var hex = HoveredHex + new Hex(q, r);
-                    if (WorldGrid.IsWithinBounds(hex))
+                    if (World.IsWithinBounds(hex))
                     {
                         var previewColor = HoverOutlineColor;
                         previewColor.A = 100;
@@ -357,6 +367,41 @@ void Draw()
         {
             // Regular single hex hover outline
             DrawHexOutline(HoveredHex, HoverOutlineColor, 5f);
+        }
+
+        // Show tooltip when Alt is pressed
+        if (RL.IsKeyDown(KeyboardKey.LeftAlt) || RL.IsKeyDown(KeyboardKey.RightAlt))
+        {
+            Cell? hoveredCell = World.GetCell(HoveredHex);
+            Vector2 tooltipPos = Layout.HexToPixel(HoveredHex);
+            
+            // Build tooltip text
+            string tooltipText = $"Hex: {HoveredHex}\n";
+            tooltipText += $"ID: {(hoveredCell != null ? hoveredCell.Id.ToString().Substring(0, 8) : "None")}\n";
+            tooltipText += $"Type: {(hoveredCell != null ? hoveredCell.Type.ToString() : "None")}\n";
+            
+            // Add morphogen information if applicable
+            if (World.MorphogenManager.Morphogens.Any())
+            {
+                tooltipText += "Morphogens:\n";
+                foreach (var morphogen in World.MorphogenManager.Morphogens)
+                {
+                    float strength = World.MorphogenManager.GetStrengthAtHex(HoveredHex, morphogen.ID);
+                    tooltipText += $"  {morphogen.ID}: {strength:F2}\n";
+                }
+            }
+            
+            // Draw tooltip background
+            float padding = 10;
+            Vector2 textSize = RL.MeasureTextEx(UIFont, tooltipText, 20, 1);
+            Rectangle tooltipRect = new Rectangle(
+                tooltipPos.X + 20, 
+                tooltipPos.Y - 20, 
+                textSize.X + padding * 2, 
+                textSize.Y + padding * 2);
+            RL.DrawRectangleRec(tooltipRect, new Color(0, 0, 0, 200));
+            RL.DrawRectangleLinesEx(tooltipRect, 1, Color.White);
+            RL.DrawTextEx(UIFont, tooltipText, new Vector2(tooltipPos.X + 20 + padding, tooltipPos.Y - 20 + padding), 20, 1, Color.White);
         }
     }
 
@@ -428,7 +473,7 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
             ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Hover Hex");
             ImGui.TableNextColumn(); ImGui.Text("(N/A)");
         }
-        Cell? hoveredCell = WorldGrid.GetCell(HoveredHex);
+        Cell? hoveredCell = World.GetCell(HoveredHex);
         ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Hover Cell ID");
         ImGui.TableNextColumn(); ImGui.Text($"{(hoveredCell != null ? hoveredCell.Id.ToString().Substring(0, 8) : "None")}");
 
@@ -436,17 +481,16 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
         ImGui.TableNextColumn(); ImGui.Text($"{(hoveredCell != null ? hoveredCell.Type.ToString() : "None")}");
 
         ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Total Cells");
-        ImGui.TableNextColumn(); ImGui.Text($"{WorldGrid.GetAllOccupiedHexes().Count()}");
+        ImGui.TableNextColumn(); ImGui.Text($"{World.GetAllOccupiedHexes().Count()}");
 
         ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Map Radius");
-        ImGui.TableNextColumn(); ImGui.Text($"{WorldGrid.MapRadius}");
+        ImGui.TableNextColumn(); ImGui.Text($"{World.MapRadius}");
 
         ImGui.EndTable();
     }
     ImGui.Separator();
 
     ImGui.Text("Cell Type (Editing Mode)");
-    ImGui.BeginDisabled(CurrentSimulationState != SimulationState.Editing);
     foreach (CellType cellType in Enum.GetValues(typeof(CellType)))
     {
         if (cellType == CellType.None) continue;
@@ -455,7 +499,6 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
             selectedCellType = cellType;
         }
     }
-    ImGui.EndDisabled();
     ImGui.Separator();
 
     // Add Graphs section
@@ -600,7 +643,7 @@ void DrawSimulationControls()
         ImGui.SameLine();
 
         // Edit/Simulate Toggle Button
-        string editModeLabel = CurrentSimulationState == SimulationState.Editing ? "Simulate" : "Edit";
+        string editModeLabel = CurrentSimulationState == SimulationState.Editing ? "Sim" : "Edit";
         if (ImGui.Button(editModeLabel, new Vector2(80, 0)))
         {
             if (CurrentSimulationState == SimulationState.Editing)
@@ -611,7 +654,7 @@ void DrawSimulationControls()
             else // Current state is Paused or Running
             {
                 CurrentSimulationState = SimulationState.Editing;
-                WorldGrid.ClearAndReset(); // Reset grid when returning to edit mode
+                World.ClearAndReset(); // Reset grid when returning to edit mode
                 timeSinceLastStep = 0; // Reset timer when going to edit mode
             }
         }
@@ -645,5 +688,6 @@ void Run(int width, int height, string title)
         RL.EndDrawing();
     }
     rlImGui.Shutdown();
+    RL.UnloadFont(UIFont); // Unload font before closing
     RL.CloseWindow();
 }

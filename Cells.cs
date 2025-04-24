@@ -28,17 +28,9 @@ public abstract class Cell
     // Position now has a protected set, accessible internally for movement
     public Hex Position { get; protected set; }
     public abstract CellType Type { get; }
-    public Genome Genome { get; set; }
 
     // Time-related properties for animations and lifecycle
     protected float CreationTime { get; private set; }
-    protected float LastDivisionTime { get; private set; }
-
-    // Cell division properties
-    protected virtual float DivisionCooldown => 3.0f;
-    protected const float DivisionMaturityThreshold = 1.0f;
-    // Increased randomness slightly to stagger division/movement
-    protected const float DivisionRandomness = 0.1f; // Example: 10% chance to skip division even if ready
 
     // Cell rendering properties
     protected const int VertexCount = 12;
@@ -46,34 +38,23 @@ public abstract class Cell
     protected const float PulsationAmount = 0.03f;
     protected const float PulsationSpeed = 0.7f;
 
+    // Death properties
+    public bool IsDead { get; private set; } = false;
+
     // Constructor
     protected Cell(Hex position)
     {
         Position = position;
         CreationTime = (float)Raylib.GetTime();
-        LastDivisionTime = CreationTime - (Random.Shared.NextSingle() * DivisionCooldown); // Stagger initial division
-        Genome = CreateDefaultGenome();
     }
 
-    protected virtual Genome CreateDefaultGenome()
+    // Chance to die
+    protected void Die(float probability = 1)
     {
-        var genome = new Genome();
-        
-        // Add genes for basic cell behavior
-        var divisionGene = new Gene("Division", 0.5f);
-        divisionGene.MorphogenSensitivity[MorphogenType.Activator] = 0.2f;
-        divisionGene.MorphogenSensitivity[MorphogenType.Inhibitor] = -0.3f;
-        genome.AddGene(divisionGene);
-
-        var differentiationGene = new Gene("Differentiation", 0.0f);
-        differentiationGene.MorphogenSensitivity[MorphogenType.Differentiation] = 0.5f;
-        genome.AddGene(differentiationGene);
-
-        var adhesionGene = new Gene("Adhesion", 0.5f);
-        adhesionGene.MorphogenSensitivity[MorphogenType.Adhesion] = 0.3f;
-        genome.AddGene(adhesionGene);
-
-        return genome;
+        if (Random.Shared.NextSingle() < probability)
+        {
+            IsDead = true;
+        }
     }
 
     // --- Drawing methods remain the same ---
@@ -200,43 +181,20 @@ public abstract class Cell
     /// </summary>
     /// <param name="grid">The world grid for interaction.</param>
     /// <returns>A new Cell if division occurs, otherwise null.</returns>
-    public virtual Cell? Update(WorldGrid grid)
+    public virtual void Update(WorldGrid grid)
     {
-        // Update gene expression based on local morphogen levels
-        var localMorphogenLevels = grid.GetLocalMorphogenLevels(Position);
-        Genome.UpdateExpression(localMorphogenLevels);
-
-        // Produce morphogens based on gene expression
-        foreach (var gene in Genome.Genes.Values)
+        // Check if we're still valid in the grid
+        if (!CellExists(grid))
         {
-            foreach (var (morphogen, production) in gene.MorphogenProduction)
-            {
-                if (production > 0)
-                {
-                    grid.AddMorphogen(morphogen, Position, production * gene.ExpressionLevel);
-                }
-            }
+            return;
         }
+    }
 
-        // Attempt movement based on adhesion gene
-        if (Genome.Genes.TryGetValue("Adhesion", out var adhesionGene))
-        {
-            if (adhesionGene.ExpressionLevel < 0.3f)
-            {
-                TryMoveRandomly(grid);
-            }
-        }
+    public bool CellExists(WorldGrid grid)
+    {
+        Cell? currentCellInGrid = grid.GetCell(Position);
 
-        // Check for division based on division gene
-        if (Genome.Genes.TryGetValue("Division", out var divisionGene))
-        {
-            if (divisionGene.ExpressionLevel > 0.7f)
-            {
-                return CheckForDivision(grid);
-            }
-        }
-
-        return null;
+        return currentCellInGrid != null && currentCellInGrid.Id == Id;
     }
 
     /// <summary>
@@ -263,24 +221,8 @@ public abstract class Cell
     /// <summary>
     /// Checks conditions for division and returns a new cell if division occurs.
     /// </summary>
-    protected virtual Cell? CheckForDivision(WorldGrid grid)
+    protected virtual void TryDivide(WorldGrid grid)
     {
-        float currentTime = (float)Raylib.GetTime();
-        float age = currentTime - CreationTime;
-        float timeSinceLastDivision = currentTime - LastDivisionTime;
-
-        // Check cooldowns and maturity
-        if (age < DivisionMaturityThreshold || timeSinceLastDivision < DivisionCooldown)
-        {
-            return null; // Not ready
-        }
-
-        // Apply randomness factor
-        if (Random.Shared.NextSingle() < DivisionRandomness) // Use <= if you want 0 randomness to mean never skip
-        {
-             return null; // Skip division this tick based on chance
-        }
-
         // Find empty neighbors at the *current* position
         var emptyNeighbors = GetEmptyNeighborHexes(grid);
 
@@ -298,14 +240,9 @@ public abstract class Cell
                  // Create the offspring
                  Cell newCell = CreateDivisionOffspring(targetHex);
 
-                 // Reset division timer for the parent cell
-                 LastDivisionTime = currentTime;
-
-                 return newCell; // Return the newly created cell
+                 grid.AddCell(newCell);
             }
         }
-
-        return null; // No suitable empty neighbor found or target became occupied
     }
 
     /// <summary>
@@ -420,10 +357,8 @@ public abstract class BasicCell : Cell
     // Create a new cell of the same type
     protected override Cell CreateDivisionOffspring(Hex targetPosition)
     {
-        var offspring = Cell.CreateCell(this.Type, targetPosition);
-        offspring.Genome = Genome.Clone();
-        offspring.Genome.Mutate();
-        return offspring;
+        // Use the factory method to create a new cell of the same type
+        return Cell.CreateCell(this.Type, targetPosition);
     }
 }
 
@@ -435,11 +370,15 @@ public class StemCell(Hex position) : BasicCell(position)
     protected override Color MembraneColor => new(80, 220, 200, 220); // Bright cyan
     protected override float NucleusRadiusRatio => 0.3f;
     protected override float MembraneThickness => 5.0f;
-    
-    // Stem cells divide faster than other cells
-    protected override float DivisionCooldown => 2.0f; // Quicker division
 
     public override CellType Type => CellType.Stem;
+
+    override public void Update(WorldGrid grid)
+    {
+        base.Update(grid);
+
+        grid.MorphogenManager.Emit("T0", Position);
+    }
 }
 
 public class FleshCell(Hex position) : BasicCell(position)
@@ -450,11 +389,13 @@ public class FleshCell(Hex position) : BasicCell(position)
     protected override Color MembraneColor => new(240, 120, 90, 220); // Soft orange
     protected override float NucleusRadiusRatio => 0.14f;
     protected override float MembraneThickness => 3.0f;
-    
-    // Flesh cells divide at medium speed
-    protected override float DivisionCooldown => 4.0f;
 
     public override CellType Type => CellType.Flesh;
+
+    override public void Update(WorldGrid grid)
+    {
+        base.Update(grid);
+    }
 }
 
 public class SkinCell(Hex position) : BasicCell(position)
@@ -465,9 +406,18 @@ public class SkinCell(Hex position) : BasicCell(position)
     protected override Color MembraneColor => new(250, 230, 200, 220); // Light tan
     protected override float NucleusRadiusRatio => 0.2f;
     protected override float MembraneThickness => 4.0f;
-    
-    // Skin cells divide slower than other cells
-    protected override float DivisionCooldown => 6.0f;
 
     public override CellType Type => CellType.Skin;
+
+    override public void Update(WorldGrid grid)
+    {
+        base.Update(grid);
+
+        // if there is presence of T0, divide
+        if (grid.MorphogenManager.GetStrengthAtHex(Position, "T0") > 0.5f)
+        {
+            // Emit T1
+            grid.MorphogenManager.Emit("T1", Position);
+        }
+    }
 }
