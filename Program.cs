@@ -12,8 +12,8 @@ using rlImGui_cs;
 const int ScreenWidth = 1280;
 const int ScreenHeight = 720;
 const string WindowTitle = "EvoVerse Hex Grid";
-const int TargetFps = 60;
-const int MapRadius = 20;
+const int TargetFps = 500;
+const int MapRadius = 50;
 const float MinZoom = 10f;
 const float MaxZoom = 300f;
 
@@ -22,12 +22,15 @@ Color BackgroundColor = new(220, 248, 255, 255); // AliceBlue
 Color HoverOutlineColor = new(100, 110, 120, 255);
 Color BorderColor = new(150, 150, 150, 40); // Semi-transparent gray for border hexes
 
+// --- Cell Type String Cache ---
+Dictionary<CellType, string> CellTypeStringCache = InitializeCellTypeStringCache();
+
 // --- Fonts ---
 Font UIFont;
 
 // --- Cell Count Tracking ---
 const int MaxCellCountHistory = 1000; // Keep last 1000 data points
-List<int> CellCountHistory = new();
+List<int> CellCountHistory = [];
 
 // --- Grid Setup ---
 HexLayout Layout;
@@ -38,6 +41,10 @@ Vector2 GridOrigin = new(ScreenWidth / 2f, ScreenHeight / 2f);
 Vector2 mousePos;
 CellType selectedCellType = CellType.Flesh; // Default selected cell type
 int brushSize = 0; // Radius of cells to place (0 = single cell)
+
+// --- Morphogen Visualization ---
+Dictionary<string, bool> MorphogenVisibility = new Dictionary<string, bool>();
+Dictionary<string, Color> MorphogenColors = new Dictionary<string, Color>();
 
 // --- Simulation State & Control ---
 SimulationState CurrentSimulationState = SimulationState.Editing;
@@ -53,8 +60,17 @@ void Init()
 {
     Layout = new HexLayout(HexLayout.Pointy, HexSize, GridOrigin);
     World = new WorldGrid(Layout, MapRadius);
-    World.MorphogenManager.RegisterMorphogen(new Morphogen("T0", 10, new Color(255, 0, 0, 255)));
-    World.MorphogenManager.RegisterMorphogen(new Morphogen("T1", 10, new Color(0, 255, 0, 255)));
+    World.MorphogenManager.RegisterMorphogen(new Morphogen("T0", 10));
+    World.MorphogenManager.RegisterMorphogen(new Morphogen("T1", 10));
+    
+    // Initialize all morphogens as visible by default with default colors
+    foreach (var morphogen in World.MorphogenManager.Morphogens)
+    {
+        MorphogenVisibility[morphogen.ID] = true;
+        
+        MorphogenColors[morphogen.ID] = Utils.SampleHSV(0.75f);
+    }
+    
     World.ClearAndReset(); // Start with a stem cell
     RL.SetTargetFPS(TargetFps);
 
@@ -110,6 +126,27 @@ void Update()
     mousePos = RL.GetMousePosition();
     bool isInputCapturedByUI = ImGui.GetIO().WantCaptureMouse || ImGui.GetIO().WantCaptureKeyboard;
     HoveredHex = new Hex(int.MaxValue, int.MaxValue); // Reset hovered hex
+
+    // Ensure all morphogens have visibility settings and colors
+    foreach (var morphogen in World.MorphogenManager.Morphogens)
+    {
+        // Check for visibility settings
+        if (!MorphogenVisibility.ContainsKey(morphogen.ID))
+        {
+            MorphogenVisibility[morphogen.ID] = true; // Default to visible
+        }
+        
+        // Check for color settings
+        if (!MorphogenColors.ContainsKey(morphogen.ID))
+        {
+            // Generate a unique color based on ID to keep consistency
+            var hash = morphogen.ID.GetHashCode();
+            var r = (byte)((hash & 0xFF0000) >> 16);
+            var g = (byte)((hash & 0x00FF00) >> 8);
+            var b = (byte)(hash & 0x0000FF);
+            MorphogenColors[morphogen.ID] = new Color((byte)r, (byte)g, (byte)b, (byte)255);
+        }
+    }
 
     // --- Simulation Logic Update ---
     bool performUpdate = false;
@@ -282,35 +319,32 @@ void PlaceCellIfValid(CellType cellType)
     }
 }
 
-void DrawHexOutline(Hex hex, Color color, float borderWidth = 2f, float sizeMultiplier = 1.0f)
+void DrawHexOutline(Hex hex, Color color, float borderWidth = 2f)
 {
-    if (sizeMultiplier <= 0) return;
-
-    // Create a temporary layout with adjusted size for the outline
-    var tempLayout = new HexLayout(
-        World.Layout.Orientation,
-        World.Layout.Size * sizeMultiplier,
-        World.Layout.Origin
-    );
-    
-    Vector2[] borderCorners = tempLayout.PolygonCorners(hex);
+    Vector2[] borderCorners = Layout.PolygonCorners(hex);
+    // Add the first corner to the end of the array to close the loop
+    borderCorners = [.. borderCorners, borderCorners[0]];
     if (borderCorners.Length >= 2)
     {
-        for (int i = 0; i < borderCorners.Length; i++)
-        {
-            RL.DrawLineEx(borderCorners[i], borderCorners[(i + 1) % borderCorners.Length], borderWidth, color);
-        }
+        RL.DrawLineStrip(borderCorners, borderCorners.Length, color);
     }
 }
 
-void DrawMorphogen(Hex hex, Color color)
+void DrawMorphogen(Hex hex)
 {
     foreach (var morphogen in World.MorphogenManager.Morphogens)
     {
-        var strength = World.MorphogenManager.GetStrengthAtHex(hex, morphogen.ID);
-        var radius = 0.5f * strength * Layout.Size.X;
-        var alpha = (byte)(strength * 255);
-        RL.DrawCircleV(Layout.HexToPixel(hex), radius, new Color(color.R, color.G, color.B, alpha));
+        if (MorphogenVisibility[morphogen.ID])
+        {
+            var strength = World.MorphogenManager.GetStrengthAtHex(hex, morphogen.ID);
+            var radius = 0.5f * strength * Layout.Size.X;
+            var alpha = (byte)(strength * 255);
+            
+            // Use custom color from dictionary
+            Color displayColor = MorphogenColors[morphogen.ID];
+                
+            RL.DrawPoly(Layout.HexToPixel(hex), 8, radius, 0, new Color(displayColor.R, displayColor.G, displayColor.B, alpha));
+        }
     }
 }
 
@@ -319,42 +353,56 @@ void Draw()
     RL.ClearBackground(BackgroundColor);
 
     // --- 1. Draw Grid Lines ---
-    foreach (Hex hex in World.GetHexesInRadius().Where(World.Layout.IsInView))
+    foreach (Hex hex in World.GetHexesInRadius())
     {
-        if (World.GetCellType(hex) == CellType.None)
+        if (World.Layout.IsInView(hex) && World.IsWithinBounds(hex))
         {
-            DrawHexOutline(hex, BorderColor);
+            if (World.GetCellType(hex) == CellType.None)
+            {
+                DrawHexOutline(hex, BorderColor);
+            }
         }
     }
 
     // --- 2. Draw Morphogens ---
     foreach (var affectedHex in World.MorphogenManager.GetAffectedHexes())
     {
-        DrawMorphogen(affectedHex, BorderColor);
+        if (World.Layout.IsInView(affectedHex) && World.IsWithinBounds(affectedHex))
+        {
+            DrawMorphogen(affectedHex);
+        }
     }
 
     // --- 3. Draw Cells ---
     var allCells = World.GetAllCells().ToArray();
-    foreach (Cell cell in allCells.Where(c => World.Layout.IsInView(c.Position)))
+    foreach (Cell cell in allCells)
     {
-        var neighbors = allCells.Where(n => cell.Position.Distance(n.Position) <= 1).ToList();
-        cell.Draw(World.Layout, HexSize.X * 0.75f, neighbors);
+        if (World.Layout.IsInView(cell.Position))
+        {
+            var neighbors = new List<Cell>();
+            foreach (var n in allCells)
+            {
+                if (cell.Position.Distance(n.Position) <= 1)
+                {
+                    neighbors.Add(n);
+                }
+            }
+            cell.Draw(World.Layout, HexSize.X * 0.75f, neighbors);
+        }
     }
 
     // --- 3. Draw Hover Outline ---
     bool isHoverValid = !IsInputCapturedByUI() && World.IsWithinBounds(HoveredHex);
     if (isHoverValid)
     {
-        // Draw brush preview if in editing mode and brush size > 0
         if (brushSize > 0)
         {
-            // Draw faint outlines for all hexes in brush radius
             for (int q = -brushSize; q <= brushSize; q++)
             {
                 for (int r = Math.Max(-brushSize, -q - brushSize); r <= Math.Min(brushSize, -q + brushSize); r++)
                 {
                     var hex = HoveredHex + new Hex(q, r);
-                    if (World.IsWithinBounds(hex))
+                    if (World.Layout.IsInView(hex))
                     {
                         var previewColor = HoverOutlineColor;
                         previewColor.A = 100;
@@ -365,39 +413,37 @@ void Draw()
         }
         else
         {
-            // Regular single hex hover outline
             DrawHexOutline(HoveredHex, HoverOutlineColor, 5f);
         }
 
-        // Show tooltip when Alt is pressed
         if (RL.IsKeyDown(KeyboardKey.LeftAlt) || RL.IsKeyDown(KeyboardKey.RightAlt))
         {
             Cell? hoveredCell = World.GetCell(HoveredHex);
             Vector2 tooltipPos = Layout.HexToPixel(HoveredHex);
-            
-            // Build tooltip text
+
             string tooltipText = $"Hex: {HoveredHex}\n";
             tooltipText += $"ID: {(hoveredCell != null ? hoveredCell.Id.ToString().Substring(0, 8) : "None")}\n";
-            tooltipText += $"Type: {(hoveredCell != null ? hoveredCell.Type.ToString() : "None")}\n";
-            
-            // Add morphogen information if applicable
+            tooltipText += $"Type: {(hoveredCell != null ? CellTypeStringCache[hoveredCell.Type] : "None")}\n";
+
             if (World.MorphogenManager.Morphogens.Any())
             {
                 tooltipText += "Morphogens:\n";
                 foreach (var morphogen in World.MorphogenManager.Morphogens)
                 {
-                    float strength = World.MorphogenManager.GetStrengthAtHex(HoveredHex, morphogen.ID);
-                    tooltipText += $"  {morphogen.ID}: {strength:F2}\n";
+                    if (MorphogenVisibility[morphogen.ID])
+                    {
+                        float strength = World.MorphogenManager.GetStrengthAtHex(HoveredHex, morphogen.ID);
+                        tooltipText += $"  {morphogen.ID}: {strength:F2}\n";
+                    }
                 }
             }
-            
-            // Draw tooltip background
+
             float padding = 10;
             Vector2 textSize = RL.MeasureTextEx(UIFont, tooltipText, 20, 1);
-            Rectangle tooltipRect = new Rectangle(
-                tooltipPos.X + 20, 
-                tooltipPos.Y - 20, 
-                textSize.X + padding * 2, 
+            Rectangle tooltipRect = new(
+                tooltipPos.X + 20,
+                tooltipPos.Y - 20,
+                textSize.X + padding * 2,
                 textSize.Y + padding * 2);
             RL.DrawRectangleRec(tooltipRect, new Color(0, 0, 0, 200));
             RL.DrawRectangleLinesEx(tooltipRect, 1, Color.White);
@@ -407,7 +453,7 @@ void Draw()
 
     // --- 4. Draw UI ---
     rlImGui.Begin();
-    DrawInfoPanel(isHoverValid, 0.25f); // Use 25% of the screen width by default
+    DrawInfoPanel(isHoverValid, 0.25f);
     DrawSimulationControls();
     rlImGui.End();
 }
@@ -478,7 +524,7 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
         ImGui.TableNextColumn(); ImGui.Text($"{(hoveredCell != null ? hoveredCell.Id.ToString().Substring(0, 8) : "None")}");
 
         ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Hover Type");
-        ImGui.TableNextColumn(); ImGui.Text($"{(hoveredCell != null ? hoveredCell.Type.ToString() : "None")}");
+        ImGui.TableNextColumn(); ImGui.Text($"{(hoveredCell != null ? CellTypeStringCache[hoveredCell.Type] : "None")}");
 
         ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Total Cells");
         ImGui.TableNextColumn(); ImGui.Text($"{World.GetAllOccupiedHexes().Count()}");
@@ -494,9 +540,69 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
     foreach (CellType cellType in Enum.GetValues(typeof(CellType)))
     {
         if (cellType == CellType.None) continue;
-        if (ImGui.RadioButton(cellType.ToString(), selectedCellType == cellType))
+        if (ImGui.RadioButton(CellTypeStringCache[cellType], selectedCellType == cellType))
         {
             selectedCellType = cellType;
+        }
+    }
+    ImGui.Separator();
+
+    // Add Morphogen Visualization Section
+    if (ImGui.CollapsingHeader("Morphogen Visualization"))
+    {
+        foreach (var morphogen in World.MorphogenManager.Morphogens)
+        {
+            bool isVisible = MorphogenVisibility[morphogen.ID];
+            if (ImGui.Checkbox($"{morphogen.ID}", ref isVisible))
+            {
+                MorphogenVisibility[morphogen.ID] = isVisible;
+            }
+            
+            // Display color indicator next to checkbox
+            ImGui.SameLine();
+            
+            // Get color from custom colors
+            Color currentColor = MorphogenColors[morphogen.ID];
+                
+            Vector4 color = new Vector4(
+                currentColor.R / 255f,
+                currentColor.G / 255f,
+                currentColor.B / 255f,
+                1.0f
+            );
+            
+            // Check if color button is clicked and show color picker
+            if (ImGui.ColorButton($"##{morphogen.ID}_color", color, ImGuiColorEditFlags.NoTooltip, new Vector2(20, 20)))
+            {
+                ImGui.OpenPopup($"color_picker_{morphogen.ID}");
+            }
+            
+            // Color picker popup
+            if (ImGui.BeginPopup($"color_picker_{morphogen.ID}"))
+            {
+                ImGui.Text($"Edit {morphogen.ID} Color");
+                ImGui.Separator();
+                
+                if (ImGui.ColorPicker4($"##{morphogen.ID}_picker", ref color, 
+                    ImGuiColorEditFlags.NoAlpha | ImGuiColorEditFlags.DisplayRGB | 
+                    ImGuiColorEditFlags.DisplayHex | ImGuiColorEditFlags.InputRGB))
+                {
+                    // Update the custom color dictionary
+                    MorphogenColors[morphogen.ID] = new Color(
+                        (byte)(color.X * 255),
+                        (byte)(color.Y * 255),
+                        (byte)(color.Z * 255),
+                        (byte)255
+                    );
+                }
+                ImGui.EndPopup();
+            }
+            
+            // Add a tooltip showing the range
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip($"Range: {morphogen.Range}");
+            }
         }
     }
     ImGui.Separator();
@@ -602,8 +708,8 @@ void DrawSimulationControls()
     ImGuiViewportPtr viewport = ImGui.GetMainViewport();
     Vector2 work_pos = viewport.WorkPos;
     Vector2 work_size = viewport.WorkSize;
-    Vector2 window_pos = new Vector2(work_pos.X + work_size.X * 0.5f, work_pos.Y + work_size.Y - padding);
-    Vector2 window_pos_pivot = new Vector2(0.5f, 1.0f);
+    Vector2 window_pos = new Vector2(work_pos.X + work_size.X - padding, work_pos.Y + work_size.Y - padding);
+    Vector2 window_pos_pivot = new Vector2(1.0f, 1.0f); // Pivot to bottom right
 
     ImGui.SetNextWindowPos(window_pos, ImGuiCond.Always, window_pos_pivot);
     ImGui.SetNextWindowBgAlpha(0.6f);
@@ -690,4 +796,14 @@ void Run(int width, int height, string title)
     rlImGui.Shutdown();
     RL.UnloadFont(UIFont); // Unload font before closing
     RL.CloseWindow();
+}
+
+static Dictionary<CellType, string> InitializeCellTypeStringCache()
+{
+    var cache = new Dictionary<CellType, string>();
+    foreach (CellType cellType in Enum.GetValues(typeof(CellType)))
+    {
+        cache[cellType] = cellType.ToString();
+    }
+    return cache;
 }

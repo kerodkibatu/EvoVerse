@@ -1,184 +1,107 @@
-using System.Collections.Generic;
-using System.Numerics;
-using System;
-using System.Linq;
-using Raylib_cs;
-using System.Security.Cryptography.X509Certificates; // Needed for GetAllCells().ToList() if not already present
+using System.Runtime.CompilerServices;
 
 namespace EvoVerse;
 
 public class WorldGrid
 {
     public MorphogenManager MorphogenManager { get; }
-
-    private readonly Dictionary<Hex, Cell> _cells = new Dictionary<Hex, Cell>();
-    private HexLayout _layout;
-    public HexLayout Layout => _layout;
+    private readonly Dictionary<Hex, Cell> _cells = new();
+    public HexLayout Layout { get; private set; }
     public int MapRadius { get; private set; }
+    private List<Hex>? _cachedHexesInRadius;
+    private int _cachedRadius;
+    private static readonly Hex OriginHex = new(0, 0);
 
     public WorldGrid(HexLayout initialLayout, int mapRadius)
     {
-        _layout = initialLayout;
+        Layout = initialLayout;
         MapRadius = mapRadius;
-        MorphogenManager = new MorphogenManager(this);
+        MorphogenManager = new MorphogenManager();
     }
 
-    public bool IsWithinBounds(Hex hex)
-    {
-        return hex.Length() <= MapRadius;
-    }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool IsWithinBounds(Hex hex) => hex.Length() <= MapRadius;
 
-    public void UpdateLayout(HexLayout newLayout)
-    {
-        _layout = newLayout;
-    }
+    public void UpdateLayout(HexLayout newLayout) => Layout = newLayout;
 
     public void Update()
     {
-        // Update morphogens
         MorphogenManager.Update();
-
-        var cells = GetAllCells();
-        // Update cells
-        foreach (var cell in cells)
+        
+        var cellsToRemove = new List<Hex>(_cells.Count / 10); // Estimate 10% might die
+        foreach (var kvp in _cells)
         {
-            cell.Update(this);
-            if (cell.IsDead)
-            {
-                _cells.Remove(cell.Position);
-            }
+            kvp.Value.Update(this);
+            if (kvp.Value.IsDead)
+                cellsToRemove.Add(kvp.Key);
         }
+        
+        foreach (var hex in cellsToRemove)
+            _cells.Remove(hex);
     }
 
-    public Cell? GetCell(Hex hex)
-    {
-        // No bounds check here; let caller decide if that's needed.
-        // Bounds check happens in IsOccupied, MoveCell, AddCell etc.
-        return _cells.TryGetValue(hex, out Cell? cell) ? cell : null;
-    }
+    public Cell? GetCell(Hex hex) => _cells.TryGetValue(hex, out var cell) ? cell : null;
 
-    public CellType GetCellType(Hex hex)
-    {
-        // Bounds check is implicit via GetCell returning null if key not found
-        // or can be added explicitly if desired: !IsWithinBounds(hex) ? CellType.None : ...
-        Cell? cell = GetCell(hex);
-        return cell?.Type ?? CellType.None;
-    }
+    public CellType GetCellType(Hex hex) => GetCell(hex)?.Type ?? CellType.None;
 
-    /// <summary>
-    /// Checks if a hex is within bounds and contains a cell.
-    /// </summary>
-    public bool IsOccupied(Hex hex)
-    {
-        // Combines bounds check and cell existence check
-        return IsWithinBounds(hex) && _cells.ContainsKey(hex);
-    }
+    public bool IsOccupied(Hex hex) => IsWithinBounds(hex) && _cells.TryGetValue(hex, out _);
 
     public void PlaceCell(Hex hex, CellType cellType)
     {
         if (!IsWithinBounds(hex)) return;
 
         if (cellType == CellType.None)
-        {
             _cells.Remove(hex);
-        }
         else
-        {
-            // Overwrite existing cell if present, or add new one
             _cells[hex] = Cell.CreateCell(cellType, hex);
-        }
     }
 
     public bool AddCell(Cell cell)
     {
-        if (cell == null || !IsWithinBounds(cell.Position))
-        {
-            return false; // Invalid cell or out of bounds
-        }
+        if (cell == null || !IsWithinBounds(cell.Position) || IsOccupied(cell.Position))
+            return false;
 
-        // Use IsOccupied which checks bounds and existence
-        if (IsOccupied(cell.Position))
-        {
-            return false; // Position already occupied
-        }
-
-        // Add the cell
         _cells[cell.Position] = cell;
         return true;
     }
 
-    /// <summary>
-    /// Moves a cell from its current position to a target hex.
-    /// Performs necessary checks and updates the cell's internal position.
-    /// </summary>
-    /// <param name="currentHex">The hex the cell is currently at.</param>
-    /// <param name="targetHex">The empty hex to move the cell to.</param>
-    /// <returns>True if the move was successful, false otherwise.</returns>
     public bool MoveCell(Hex currentHex, Hex targetHex)
     {
-        // 1. Check bounds for both hexes
-        if (!IsWithinBounds(currentHex) || !IsWithinBounds(targetHex))
+        if (!IsWithinBounds(currentHex) || !IsWithinBounds(targetHex) || 
+            !_cells.TryGetValue(currentHex, out var cellToMove) || 
+            _cells.ContainsKey(targetHex))
             return false;
 
-        // 2. Check if there is a cell at the source
-        if (!_cells.TryGetValue(currentHex, out Cell? cellToMove))
-            return false; // Source hex is empty
-
-        // 3. Check if the target hex is actually empty
-        if (_cells.ContainsKey(targetHex)) // Use ContainsKey for direct check
-            return false; // Target hex is already occupied
-
-        // --- Execute the move ---
-        // 4. Remove cell from the old position in the grid
         _cells.Remove(currentHex);
-
-        // 5. CRITICAL: Update the cell's internal position state
         cellToMove.SetPosition(targetHex);
-
-        // 6. Add the cell to the new position in the grid
         _cells[targetHex] = cellToMove;
-
-        return true; // Move successful
+        return true;
     }
 
-
-    // --- Remove the old SwapCells method ---
-    // public void SwapCells(Hex hex1, Hex hex2) { ... } // REMOVE THIS
-
-
-    // --- Other methods remain the same ---
-    public IReadOnlyCollection<Cell> GetAllCells()
-    {
-        // Returning Values directly is fine for read-only snapshotting
-        return [.. _cells.Values];
-    }
-
-    public IEnumerable<Hex> GetAllOccupiedHexes()
-    {
-        return _cells.Keys;
-    }
+    public IEnumerable<Cell> GetAllCells() => _cells.Values;
+    public IEnumerable<Hex> GetAllOccupiedHexes() => _cells.Keys;
 
     public IEnumerable<Hex> GetHexesInRadius()
     {
-        // ... (implementation remains the same) ...
-        for (int q = -MapRadius; q <= MapRadius; q++)
+        if (_cachedHexesInRadius == null || _cachedRadius != MapRadius)
         {
-            int r1 = Math.Max(-MapRadius, -q - MapRadius);
-            int r2 = Math.Min(MapRadius, -q + MapRadius);
-            for (int r = r1; r <= r2; r++)
+            _cachedHexesInRadius = new List<Hex>();
+            for (int q = -MapRadius; q <= MapRadius; q++)
             {
-                yield return new Hex(q, r);
+                int r1 = Math.Max(-MapRadius, -q - MapRadius);
+                int r2 = Math.Min(MapRadius, -q + MapRadius);
+                for (int r = r1; r <= r2; r++)
+                    _cachedHexesInRadius.Add(new Hex(q, r));
             }
+            _cachedRadius = MapRadius;
         }
+        return _cachedHexesInRadius;
     }
 
-    /// <summary>
-    /// Clears all cells and morphogens from the grid and places a single stem cell at the center.
-    /// </summary>
     public void ClearAndReset()
     {
         _cells.Clear();
         MorphogenManager.Update();
-        PlaceCell(new Hex(0, 0), CellType.Stem);
+        PlaceCell(OriginHex, CellType.Stem);
     }
 }

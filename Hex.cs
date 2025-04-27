@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using Raylib_cs;
 
 namespace EvoVerse
@@ -50,8 +51,11 @@ namespace EvoVerse
             (-1, 0), (-1, 1), (0, 1)
         };
 
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Hex Direction(int direction) => directions[direction % 6];
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Hex Neighbor(int direction) => Add(this, Direction(direction));
 
         public IEnumerable<Hex> Neighbors()
@@ -66,31 +70,23 @@ namespace EvoVerse
         /// Calculates the distance from this hex to the origin (0,0).
         /// Uses the standard hex grid distance formula.
         /// </summary>
-        public int Length()
-        {
-            // Since s = -q - r, the distance is max(|q|, |r|, |s|)
-            return (Math.Abs(Q) + Math.Abs(R) + Math.Abs(-Q - R)) / 2;
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int Length() => (Math.Abs(Q) + Math.Abs(R) + Math.Abs(-Q - R)) / 2;
 
-        public int Distance(Hex other)
-        {
-            return (Math.Abs(Q - other.Q) + Math.Abs(R - other.R) + Math.Abs(-Q - R - (-other.Q - other.R))) / 2;
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int Distance(Hex other) => (Math.Abs(Q - other.Q) + Math.Abs(R - other.R) + Math.Abs(-Q - R - (-other.Q - other.R))) / 2;
 
         public static IEnumerable<Hex> GetHexesInRange(Hex hex, int range)
         {
-            for (int q = -range + hex.Q; q <= range + hex.Q; q++)
+            for (int q = -range; q <= range; q++)
             {
-                for (int r = Math.Max(-range + hex.R, -q - range + hex.Q); r <= Math.Min(range + hex.R, -q + range + hex.Q); r++)
+                int r1 = Math.Max(-range, -q - range);
+                int r2 = Math.Min(range, -q + range);
+                for (int r = r1; r <= r2; r++)
                 {
-                    yield return new Hex(q, r);
+                    yield return new Hex(q, r) + hex;
                 }
             }
-        }
-
-        public static int Distance(Hex sourceHex, Hex hex)
-        {
-            return sourceHex.Distance(hex);
         }
     }
 
@@ -115,20 +111,14 @@ namespace EvoVerse
     /// <summary>
     /// Defines the layout parameters for converting between Hex and pixel coordinates.
     /// </summary>
-    public readonly struct HexLayout
+    public readonly struct HexLayout(Orientation orientation, Vector2 size, Vector2 origin)
     {
-        public readonly Orientation Orientation;
-        public readonly Vector2 Size; // Size of the hex (width, height)
-        public readonly Vector2 Origin; // Pixel offset for the center of Hex(0, 0)
-
-        public HexLayout(Orientation orientation, Vector2 size, Vector2 origin)
-        {
-            Orientation = orientation;
-            Size = size;
-            Origin = origin;
-        }
+        public readonly Orientation Orientation = orientation;
+        public readonly Vector2 Size = size; // Size of the hex (width, height)
+        public readonly Vector2 Origin = origin; // Pixel offset for the center of Hex(0, 0)
 
         // Predefined orientations
+
         public static readonly Orientation Pointy = new(
             MathF.Sqrt(3.0f), MathF.Sqrt(3.0f) / 2.0f, 0.0f, 3.0f / 2.0f, // Forward matrix
             MathF.Sqrt(3.0f) / 3.0f, -1.0f / 3.0f, 0.0f, 2.0f / 3.0f,    // Inverse matrix
@@ -144,6 +134,7 @@ namespace EvoVerse
         /// <summary>
         /// Converts a Hex coordinate to its corresponding pixel center.
         /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public Vector2 HexToPixel(Hex h)
         {
             float x = (Orientation.F0 * h.Q + Orientation.F1 * h.R) * Size.X;
@@ -198,17 +189,12 @@ namespace EvoVerse
     /// <summary>
     /// Represents a fractional Hex coordinate, used for intermediate calculations like pixel-to-hex conversion.
     /// </summary>
-    public readonly struct HexF
+    public readonly struct HexF(float q, float r)
     {
-        public readonly float Q;
-        public readonly float R;
+        public readonly float Q = q;
+        public readonly float R = r;
         public float S => -Q - R;
 
-        public HexF(float q, float r)
-        {
-            Q = q;
-            R = r;
-        }
 
         /// <summary>
         /// Rounds fractional hex coordinates to the nearest integer Hex coordinate.

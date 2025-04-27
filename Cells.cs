@@ -49,7 +49,7 @@ public abstract class Cell
     }
 
     // Chance to die
-    protected void Die(float probability = 1)
+    public void Die(float probability = 1)
     {
         if (Random.Shared.NextSingle() < probability)
         {
@@ -365,9 +365,9 @@ public abstract class BasicCell : Cell
 public class StemCell(Hex position) : BasicCell(position)
 {
     // Color constants
-    protected override Color MainColor => new(50, 200, 180, 230); // Vibrant teal
-    protected override Color NucleusColor => new(30, 140, 120, 240); // Deep teal
-    protected override Color MembraneColor => new(80, 220, 200, 220); // Bright cyan
+    protected override Color MainColor => new(210, 200, 180, 150); // Washed out beige
+    protected override Color NucleusColor => new(200, 190, 170, 150); // Light beige
+    protected override Color MembraneColor => new(220, 210, 190, 150); // Soft beige with transparency
     protected override float NucleusRadiusRatio => 0.3f;
     protected override float MembraneThickness => 5.0f;
 
@@ -391,11 +391,6 @@ public class FleshCell(Hex position) : BasicCell(position)
     protected override float MembraneThickness => 3.0f;
 
     public override CellType Type => CellType.Flesh;
-
-    override public void Update(WorldGrid grid)
-    {
-        base.Update(grid);
-    }
 }
 
 public class SkinCell(Hex position) : BasicCell(position)
@@ -408,16 +403,4 @@ public class SkinCell(Hex position) : BasicCell(position)
     protected override float MembraneThickness => 4.0f;
 
     public override CellType Type => CellType.Skin;
-
-    override public void Update(WorldGrid grid)
-    {
-        base.Update(grid);
-
-        // if there is presence of T0, divide
-        if (grid.MorphogenManager.GetStrengthAtHex(Position, "T0") > 0.5f)
-        {
-            // Emit T1
-            grid.MorphogenManager.Emit("T1", Position);
-        }
-    }
 }
