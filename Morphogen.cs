@@ -1,5 +1,6 @@
 using Raylib_cs;
 using System.Collections.Generic;
+using System.Numerics;
 
 namespace EvoVerse;
 
@@ -91,6 +92,131 @@ public class MorphogenManager
         }
 
         return Math.Clamp(totalStrength, 0f, 1f);
+    }
+
+    /// <summary>
+    /// Calculates the gradient direction of a specific morphogen at a given hex.
+    /// </summary>
+    /// <param name="hex">The center hex to sample the gradient at</param>
+    /// <param name="morphogenID">The ID of the morphogen to sample</param>
+    /// <param name="samplingDistance">Optional: The distance to sample around the hex (default: 1)</param>
+    /// <param name="towardHigher">Optional: If true, points toward higher concentration; if false, toward lower (default: true)</param>
+    /// <returns>A hex pointing in the direction of concentration gradient, or the original hex if no gradient</returns>
+    public Hex GetGradientAtHex(Hex hex, string morphogenID, int samplingDistance = 1, bool towardHigher = true)
+    {
+
+        if (!_morphogenDict.TryGetValue(morphogenID, out _))
+            return hex;
+            
+        // Get the concentration at the center hex
+        float centerConcentration = GetStrengthAtHex(hex, morphogenID);
+        
+        // Array to store concentration differences for each direction
+        float[] directionStrengths = new float[6];
+        
+        // Sample all neighbors at the sampling distance
+        for (int i = 0; i < 6; i++)
+        {
+            // Get the hex in this direction at the sampling distance
+            Hex sampleHex = hex;
+            for (int d = 0; d < samplingDistance; d++)
+            {
+                sampleHex = sampleHex.Neighbor(i);
+            }
+            
+            // Get concentration at this sample point
+            float sampleConcentration = GetStrengthAtHex(sampleHex, morphogenID);
+            
+            // Calculate difference (gradient) in this direction
+            float diff = sampleConcentration - centerConcentration;
+            
+            // Invert the difference if we want to point toward lower concentration
+            if (!towardHigher)
+                diff = -diff;
+                
+            directionStrengths[i] = diff;
+        }
+        
+        // Find the direction with the maximum strength
+        int strongestDirection = -1;
+        float maxStrength = float.Epsilon; // Use epsilon to ignore very small differences
+        
+        for (int i = 0; i < 6; i++)
+        {
+            if (directionStrengths[i] > maxStrength)
+            {
+                maxStrength = directionStrengths[i];
+                strongestDirection = i;
+            }
+        }
+        
+        if (strongestDirection == -1)
+            return hex;
+
+        return hex.Neighbor(strongestDirection);
+    }
+
+    /// <summary>
+    /// Calculates the gradient direction of a specific morphogen at a given hex.
+    /// </summary>
+    /// <param name="hex">The center hex to sample the gradient at</param>
+    /// <param name="morphogenID">The ID of the morphogen to sample</param>
+    /// <param name="samplingDistance">Optional: The distance to sample around the hex (default: 1)</param>
+    /// <param name="towardHigher">Optional: If true, points toward higher concentration; if false, toward lower (default: true)</param>
+    /// <returns>A normalized Vector2 pointing in the direction of concentration gradient, or Vector2.Zero if no gradient</returns>
+    public Vector2 GetGradientVectorAtHex(Hex hex, string morphogenID, int samplingDistance = 1, bool towardHigher = true)
+    {
+        if (!_morphogenDict.TryGetValue(morphogenID, out var targetMorphogen))
+            return Vector2.Zero;
+            
+        // Get the concentration at the center hex
+        float centerConcentration = GetStrengthAtHex(hex, morphogenID);
+        
+        // Initialize gradient vector
+        Vector2 gradientVector = Vector2.Zero;
+        
+        // Sample all neighbors at the sampling distance
+        for (int i = 0; i < 6; i++)
+        {
+            // Get the hex in this direction at the sampling distance
+            Hex sampleHex = hex;
+            for (int d = 0; d < samplingDistance; d++)
+            {
+                sampleHex = sampleHex.Neighbor(i);
+            }
+            
+            // Get concentration at this sample point
+            float sampleConcentration = GetStrengthAtHex(sampleHex, morphogenID);
+            
+            // Calculate difference (gradient) in this direction
+            float diff = sampleConcentration - centerConcentration;
+            
+            // Invert the difference if we want to point toward lower concentration
+            if (!towardHigher)
+                diff = -diff;
+            
+            // If there's a difference, add a vector in this direction proportional to the difference
+            if (Math.Abs(diff) > float.Epsilon)
+            {
+                // Get the vector pointing in this direction (convert hex direction to angle)
+                float angle = (float)(i * Math.PI / 3); // 60 degrees per direction
+                Vector2 directionVector = new(
+                    (float)Math.Cos(angle),
+                    (float)Math.Sin(angle)
+                );
+                
+                // Add to the gradient vector, weighted by the concentration difference
+                gradientVector += directionVector * diff;
+            }
+        }
+        
+        // Normalize the gradient vector (if it's not zero)
+        if (gradientVector != Vector2.Zero)
+        {
+            return Vector2.Normalize(gradientVector);
+        }
+        
+        return Vector2.Zero;
     }
 
     public IEnumerable<Hex> GetAffectedHexes()

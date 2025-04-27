@@ -336,12 +336,13 @@ void DrawMorphogen(Hex hex)
     {
         if (MorphogenVisibility[morphogen.ID])
         {
-            var strength = World.MorphogenManager.GetStrengthAtHex(hex, morphogen.ID);
-            var radius = 0.5f * strength * Layout.Size.X;
-            var alpha = (byte)(strength * 255);
-            
             // Use custom color from dictionary
             Color displayColor = MorphogenColors[morphogen.ID];
+
+            var strength = World.MorphogenManager.GetStrengthAtHex(hex, morphogen.ID);
+            var radius = 0.5f * strength * Layout.Size.X;
+            var alpha = (byte)(strength * displayColor.A);
+            
                 
             RL.DrawPoly(Layout.HexToPixel(hex), 8, radius, 0, new Color(displayColor.R, displayColor.G, displayColor.B, alpha));
         }
@@ -568,7 +569,7 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
                 currentColor.R / 255f,
                 currentColor.G / 255f,
                 currentColor.B / 255f,
-                1.0f
+                currentColor.A / 255f
             );
             
             // Check if color button is clicked and show color picker
@@ -583,25 +584,21 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
                 ImGui.Text($"Edit {morphogen.ID} Color");
                 ImGui.Separator();
                 
-                if (ImGui.ColorPicker4($"##{morphogen.ID}_picker", ref color, 
-                    ImGuiColorEditFlags.NoAlpha | ImGuiColorEditFlags.DisplayRGB | 
-                    ImGuiColorEditFlags.DisplayHex | ImGuiColorEditFlags.InputRGB))
+                if (ImGui.ColorPicker4($"##{morphogen.ID}_picker", ref color,
+                    ImGuiColorEditFlags.DisplayRGB | 
+                    ImGuiColorEditFlags.DisplayHex |
+                    ImGuiColorEditFlags.AlphaBar |
+                    ImGuiColorEditFlags.InputRGB))
                 {
                     // Update the custom color dictionary
                     MorphogenColors[morphogen.ID] = new Color(
-                        (byte)(color.X * 255),
-                        (byte)(color.Y * 255),
-                        (byte)(color.Z * 255),
-                        (byte)255
+                        color.X,
+                        color.Y,
+                        color.Z,
+                        color.W
                     );
                 }
                 ImGui.EndPopup();
-            }
-            
-            // Add a tooltip showing the range
-            if (ImGui.IsItemHovered())
-            {
-                ImGui.SetTooltip($"Range: {morphogen.Range}");
             }
         }
     }
