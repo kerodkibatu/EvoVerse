@@ -84,9 +84,8 @@ public class MorphogenManager
             int distance = sourceHex.Distance(hex);
             int range = sourceMorphogen.Range;
 
-            if (distance == 0 && range == 0)
+            if (distance == 0)
                 return 1f;
-            
             if (distance <= range)
                 totalStrength += 1 - MathF.Log10(distance + 1) / MathF.Log10(range + 1);
         }
