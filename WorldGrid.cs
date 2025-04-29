@@ -4,8 +4,7 @@ namespace EvoVerse;
 
 public class WorldGrid
 {
-    public MorphogenManager MorphogenManager { get; }
-    private readonly Dictionary<Hex, Cell> _cells = new();
+    private readonly Dictionary<Hex, Cell> _cells = [];
     public HexLayout Layout { get; private set; }
     public int MapRadius { get; private set; }
     private List<Hex>? _cachedHexesInRadius;
@@ -16,7 +15,6 @@ public class WorldGrid
     {
         Layout = initialLayout;
         MapRadius = mapRadius;
-        MorphogenManager = new MorphogenManager();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -25,19 +23,26 @@ public class WorldGrid
     public void UpdateLayout(HexLayout newLayout) => Layout = newLayout;
 
     public void Update()
-    {
+    {        
         MorphogenManager.Update();
-        
+
         var cellsToRemove = new List<Hex>(_cells.Count / 10); // Estimate 10% might die
-        foreach (var kvp in _cells)
+        var cellsToDivide = new List<Hex>(_cells.Count); // Estimate all might divide
+        for (int i = _cells.Count - 1; i >= 0; i--)
         {
+            var kvp = _cells.ElementAt(i);
             kvp.Value.Update(this);
             if (kvp.Value.IsDead)
                 cellsToRemove.Add(kvp.Key);
+            else if (kvp.Value.ShouldDivide)
+                cellsToDivide.Add(kvp.Key);
         }
-        
+
         foreach (var hex in cellsToRemove)
             _cells.Remove(hex);
+
+        foreach (var hex in cellsToDivide)
+            GetCell(hex)?.TryDivide(this);
     }
 
     public Cell? GetCell(Hex hex) => _cells.TryGetValue(hex, out var cell) ? cell : null;
@@ -46,14 +51,14 @@ public class WorldGrid
 
     public bool IsOccupied(Hex hex) => IsWithinBounds(hex) && _cells.TryGetValue(hex, out _);
 
-    public void PlaceCell(Hex hex, CellType cellType)
+    public void PlaceCell(Hex hex, CellType cellType, Genome? genome = null)
     {
         if (!IsWithinBounds(hex)) return;
 
         if (cellType == CellType.None)
             _cells.Remove(hex);
         else
-            _cells[hex] = Cell.CreateCell(cellType, hex);
+            _cells[hex] = Cell.CreateCell(cellType, hex, genome ?? _genome)!;
     }
 
     public bool AddCell(Cell cell)
@@ -98,10 +103,20 @@ public class WorldGrid
         return _cachedHexesInRadius;
     }
 
+    private Genome _genome = [];
     public void ClearAndReset()
     {
+        // Read the GEL file
+        _genome = GEL_Parser.ParseGEL(File.ReadAllText("TEST.GEL"));
+        Console.WriteLine(_genome);
+
+        // Create all CellTypes once to ensure they are registered
+        foreach (var cellType in Enum.GetValues<CellType>())
+        {
+            _ = Cell.CreateCell(cellType, OriginHex);
+        }
         _cells.Clear();
         MorphogenManager.Update();
-        PlaceCell(OriginHex, CellType.Stem);
+        PlaceCell(OriginHex, CellType.Stem, _genome);
     }
 }

@@ -2,9 +2,6 @@
 using RL = Raylib_cs.Raylib;
 using System.Numerics;
 using EvoVerse;
-using System.Collections.Generic;
-using System;
-using System.Linq;
 using ImGuiNET;
 using rlImGui_cs;
 
@@ -13,7 +10,7 @@ const int ScreenWidth = 1280;
 const int ScreenHeight = 720;
 const string WindowTitle = "EvoVerse Hex Grid";
 const int TargetFps = 500;
-const int MapRadius = 50;
+const int MapRadius = 25;
 const float MinZoom = 10f;
 const float MaxZoom = 300f;
 
@@ -35,7 +32,7 @@ List<int> CellCountHistory = [];
 // --- Grid Setup ---
 HexLayout Layout;
 WorldGrid World;
-Hex HoveredHex = new(0, 0);
+Hex HoveredHex;
 Vector2 HexSize = new(30, 30);
 Vector2 GridOrigin = new(ScreenWidth / 2f, ScreenHeight / 2f);
 Vector2 mousePos;
@@ -60,15 +57,13 @@ void Init()
 {
     Layout = new HexLayout(HexLayout.Pointy, HexSize, GridOrigin);
     World = new WorldGrid(Layout, MapRadius);
-    World.MorphogenManager.RegisterMorphogen(new Morphogen("T0", 10));
-    World.MorphogenManager.RegisterMorphogen(new Morphogen("T1", 10));
     
     // Initialize all morphogens as visible by default with default colors
-    foreach (var morphogen in World.MorphogenManager.Morphogens)
+    foreach (var morphogen in MorphogenManager.Morphogens)
     {
-        MorphogenVisibility[morphogen.ID] = true;
+        MorphogenVisibility[morphogen] = true;
         
-        MorphogenColors[morphogen.ID] = Utils.SampleHSV(0.75f);
+        MorphogenColors[morphogen] = Utils.SampleHSV(0.75f);
     }
     
     World.ClearAndReset(); // Start with a stem cell
@@ -128,23 +123,23 @@ void Update()
     HoveredHex = new Hex(int.MaxValue, int.MaxValue); // Reset hovered hex
 
     // Ensure all morphogens have visibility settings and colors
-    foreach (var morphogen in World.MorphogenManager.Morphogens)
+    foreach (var morphogen in MorphogenManager.Morphogens)
     {
         // Check for visibility settings
-        if (!MorphogenVisibility.ContainsKey(morphogen.ID))
+        if (!MorphogenVisibility.ContainsKey(morphogen))
         {
-            MorphogenVisibility[morphogen.ID] = true; // Default to visible
+            MorphogenVisibility[morphogen] = true; // Default to visible
         }
         
         // Check for color settings
-        if (!MorphogenColors.ContainsKey(morphogen.ID))
+        if (!MorphogenColors.ContainsKey(morphogen))
         {
             // Generate a unique color based on ID to keep consistency
-            var hash = morphogen.ID.GetHashCode();
+            var hash = morphogen.GetHashCode();
             var r = (byte)((hash & 0xFF0000) >> 16);
             var g = (byte)((hash & 0x00FF00) >> 8);
             var b = (byte)(hash & 0x0000FF);
-            MorphogenColors[morphogen.ID] = new Color((byte)r, (byte)g, (byte)b, (byte)255);
+            MorphogenColors[morphogen] = new Color((byte)r, (byte)g, (byte)b, (byte)255);
         }
     }
 
@@ -332,19 +327,22 @@ void DrawHexOutline(Hex hex, Color color, float borderWidth = 2f)
 
 void DrawMorphogen(Hex hex)
 {
-    foreach (var morphogen in World.MorphogenManager.Morphogens)
+    // Cache the pixel position of the hex to avoid recalculating it for each morphogen
+    Vector2 hexPosition = Layout.HexToPixel(hex);
+    
+    // Use a single loop to minimize overhead
+    foreach (var morphogen in MorphogenManager.Morphogens)
     {
-        if (MorphogenVisibility[morphogen.ID])
+        if (MorphogenVisibility.TryGetValue(morphogen, out bool isVisible) && isVisible)
         {
-            // Use custom color from dictionary
-            Color displayColor = MorphogenColors[morphogen.ID];
-
-            var strength = World.MorphogenManager.GetStrengthAtHex(hex, morphogen.ID);
-            var radius = 0.5f * strength * Layout.Size.X;
-            var alpha = (byte)(strength * displayColor.A);
-            
-                
-            RL.DrawPoly(Layout.HexToPixel(hex), 8, radius, 0, new Color(displayColor.R, displayColor.G, displayColor.B, alpha));
+            Color displayColor = MorphogenColors[morphogen];
+            float strength = MorphogenManager.GetStrengthAtHex(hex, morphogen);
+            if (strength > 0) // Only draw if there's a strength
+            {
+                float radius = 0.5f * strength * Layout.Size.X;
+                byte alpha = (byte)(strength * displayColor.A);
+                RL.DrawPoly(hexPosition, 8, radius, 0, new Color(displayColor.R, displayColor.G, displayColor.B, alpha));
+            }
         }
     }
 }
@@ -366,9 +364,10 @@ void Draw()
     }
 
     // --- 2. Draw Morphogens ---
-    foreach (var affectedHex in World.MorphogenManager.GetAffectedHexes())
+    var affectedHexes = MorphogenManager.GetAffectedHexes().ToArray();
+    foreach (var affectedHex in affectedHexes)
     {
-        if (World.Layout.IsInView(affectedHex) && World.IsWithinBounds(affectedHex))
+        if (World.IsWithinBounds(affectedHex) && World.Layout.IsInView(affectedHex))
         {
             DrawMorphogen(affectedHex);
         }
@@ -426,15 +425,15 @@ void Draw()
             tooltipText += $"ID: {(hoveredCell != null ? hoveredCell.Id.ToString().Substring(0, 8) : "None")}\n";
             tooltipText += $"Type: {(hoveredCell != null ? CellTypeStringCache[hoveredCell.Type] : "None")}\n";
 
-            if (World.MorphogenManager.Morphogens.Any())
+            if (MorphogenManager.Morphogens.Any())
             {
                 tooltipText += "Morphogens:\n";
-                foreach (var morphogen in World.MorphogenManager.Morphogens)
+                foreach (var morphogen in MorphogenManager.Morphogens)
                 {
-                    if (MorphogenVisibility[morphogen.ID])
+                    if (MorphogenVisibility[morphogen])
                     {
-                        float strength = World.MorphogenManager.GetStrengthAtHex(HoveredHex, morphogen.ID);
-                        tooltipText += $"  {morphogen.ID}: {strength:F2}\n";
+                        float strength = MorphogenManager.GetStrengthAtHex(HoveredHex, morphogen);
+                        tooltipText += $"  {morphogen}: {strength:F2}\n";
                     }
                 }
             }
@@ -551,19 +550,19 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
     // Add Morphogen Visualization Section
     if (ImGui.CollapsingHeader("Morphogen Visualization"))
     {
-        foreach (var morphogen in World.MorphogenManager.Morphogens)
+        foreach (var morphogen in MorphogenManager.Morphogens)
         {
-            bool isVisible = MorphogenVisibility[morphogen.ID];
-            if (ImGui.Checkbox($"{morphogen.ID}", ref isVisible))
+            bool isVisible = MorphogenVisibility[morphogen];
+            if (ImGui.Checkbox($"{morphogen}", ref isVisible))
             {
-                MorphogenVisibility[morphogen.ID] = isVisible;
+                MorphogenVisibility[morphogen] = isVisible;
             }
             
             // Display color indicator next to checkbox
             ImGui.SameLine();
             
             // Get color from custom colors
-            Color currentColor = MorphogenColors[morphogen.ID];
+            Color currentColor = MorphogenColors[morphogen];
                 
             Vector4 color = new Vector4(
                 currentColor.R / 255f,
@@ -573,25 +572,25 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
             );
             
             // Check if color button is clicked and show color picker
-            if (ImGui.ColorButton($"##{morphogen.ID}_color", color, ImGuiColorEditFlags.NoTooltip, new Vector2(20, 20)))
+            if (ImGui.ColorButton($"##{morphogen}_color", color, ImGuiColorEditFlags.NoTooltip, new Vector2(20, 20)))
             {
-                ImGui.OpenPopup($"color_picker_{morphogen.ID}");
+                ImGui.OpenPopup($"color_picker_{morphogen}");
             }
             
             // Color picker popup
-            if (ImGui.BeginPopup($"color_picker_{morphogen.ID}"))
+            if (ImGui.BeginPopup($"color_picker_{morphogen}"))
             {
-                ImGui.Text($"Edit {morphogen.ID} Color");
+                ImGui.Text($"Edit {morphogen} Color");
                 ImGui.Separator();
                 
-                if (ImGui.ColorPicker4($"##{morphogen.ID}_picker", ref color,
+                if (ImGui.ColorPicker4($"##{morphogen}_picker", ref color,
                     ImGuiColorEditFlags.DisplayRGB | 
                     ImGuiColorEditFlags.DisplayHex |
                     ImGuiColorEditFlags.AlphaBar |
                     ImGuiColorEditFlags.InputRGB))
                 {
                     // Update the custom color dictionary
-                    MorphogenColors[morphogen.ID] = new Color(
+                    MorphogenColors[morphogen] = new Color(
                         color.X,
                         color.Y,
                         color.Z,

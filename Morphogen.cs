@@ -4,7 +4,7 @@ using System.Numerics;
 
 namespace EvoVerse;
 
-public class Morphogen
+public struct Morphogen
 {
     public string ID { get; }
     public int Range { get; }
@@ -16,81 +16,75 @@ public class Morphogen
     }
 }
 
-public class MorphogenManager
+public static class MorphogenManager
 {
-    private readonly Dictionary<string, Morphogen> _morphogenDict = new();
-    private readonly List<(Morphogen, Hex)> _sourcesPool = new();
-    
-    public HashSet<Morphogen> Morphogens { get; } = new();
-    public List<(Morphogen, Hex)> Sources { get; } = new();
+    public static HashSet<string> Morphogens { get; } = new();
+    private static Dictionary<string, Dictionary<Hex, float>> morphogenStrengthMap = new();
 
-    public void RegisterMorphogen(Morphogen morphogen)
+    public static void RegisterMorphogen(string morphogenID)
     {
-        Morphogens.Add(morphogen);
-        _morphogenDict[morphogen.ID] = morphogen;
+        Morphogens.Add(morphogenID);
+        morphogenStrengthMap[morphogenID] = new Dictionary<Hex, float>();
     }
 
-    public void UnregisterMorphogen(Morphogen morphogen)
+    public static void UnregisterMorphogen(string morphogenID)
     {
-        Morphogens.Remove(morphogen);
-        _morphogenDict.Remove(morphogen.ID);
+        Morphogens.Remove(morphogenID);
+        morphogenStrengthMap.Remove(morphogenID);
     }
 
-    public void Update()
+    public static void Update()
     {
-        // Recycle sources for next frame
-        foreach (var item in Sources)
+        foreach (var key in morphogenStrengthMap.Keys.ToList())
         {
-            _sourcesPool.Add(item);
-        }
-        Sources.Clear();
-    }
-
-    public Morphogen? GetMorphogen(string morphogenID)
-    {
-        return _morphogenDict.TryGetValue(morphogenID, out var morphogen) ? morphogen : null;
-    }
-
-    public void Emit(string morphogenID, Hex hex)
-    {
-        if (!_morphogenDict.TryGetValue(morphogenID, out var morphogen))
-            throw new Exception($"Morphogen with ID {morphogenID} not found");
-
-        if (_sourcesPool.Count > 0)
-        {
-            var last = _sourcesPool[^1];
-            _sourcesPool.RemoveAt(_sourcesPool.Count - 1);
-            last.Item1 = morphogen;
-            last.Item2 = hex;
-            Sources.Add(last);
-        }
-        else
-        {
-            Sources.Add((morphogen, hex));
+            morphogenStrengthMap[key].Clear();
         }
     }
 
-    public float GetStrengthAtHex(Hex hex, string morphogenID)
+    public static void Emit(string morphogenID, Hex hex, int range = 0)
     {
-        if (!_morphogenDict.TryGetValue(morphogenID, out var targetMorphogen))
+        if (!Morphogens.Contains(morphogenID))
+            throw new System.Exception($"Morphogen with ID {morphogenID} not found");
+
+        IEnumerable<Hex> hexesInRange = range == 0
+            ? [hex]
+            : Hex.GetHexesInRange(hex, range);
+
+        if (!morphogenStrengthMap.TryGetValue(morphogenID, out var strengthDict))
+        {
+            strengthDict = new Dictionary<Hex, float>();
+            morphogenStrengthMap[morphogenID] = strengthDict;
+        }
+
+        foreach (var h in hexesInRange)
+        {
+            float strength = CalculateStrength(hex, h, range);
+            strengthDict.TryGetValue(h, out float current);
+            strengthDict[h] = current + strength;
+        }
+    }
+
+    private static float CalculateStrength(Hex sourceHex, Hex targetHex, int range)
+    {
+        if (range == 0)
+            return 1f;
+
+        int distance = sourceHex.Distance(targetHex);
+        return distance <= range ? 1f - (distance / (float)range) : 0f;
+    }
+
+    public static float GetStrengthAtHex(Hex hex, string morphogenID)
+    {
+        if (!Morphogens.Contains(morphogenID))
             return 0f;
 
-        float totalStrength = 0f;
-        
-        foreach (var (sourceMorphogen, sourceHex) in Sources)
+        if (morphogenStrengthMap.TryGetValue(morphogenID, out var strengthDict) &&
+            strengthDict.TryGetValue(hex, out float strength))
         {
-            if (sourceMorphogen != targetMorphogen) continue;
-            
-            int distance = sourceHex.Distance(hex);
-            int range = sourceMorphogen.Range;
-
-            if (distance == 0)
-                return 1f;
-            if (distance <= range)
-                totalStrength += 1 - MathF.Log10(distance + 1) / MathF.Log10(range + 1);
+            return System.Math.Clamp(strength, 0f, 1f);
         }
 
-        return Math.Clamp(totalStrength, 0f, 1f);
+        return 0f;
     }
 
     /// <summary>
@@ -101,45 +95,54 @@ public class MorphogenManager
     /// <param name="samplingDistance">Optional: The distance to sample around the hex (default: 1)</param>
     /// <param name="towardHigher">Optional: If true, points toward higher concentration; if false, toward lower (default: true)</param>
     /// <returns>A hex pointing in the direction of concentration gradient, or the original hex if no gradient</returns>
-    public Hex GetGradientAtHex(Hex hex, string morphogenID, int samplingDistance = 1, bool towardHigher = true)
+    public static Hex GetGradientAtHex(Hex hex, string morphogenID, int samplingDistance = 1, bool towardHigher = true)
     {
-
-        if (!_morphogenDict.TryGetValue(morphogenID, out _))
+        if (!Morphogens.Contains(morphogenID))
             return hex;
-            
+
         // Get the concentration at the center hex
         float centerConcentration = GetStrengthAtHex(hex, morphogenID);
-        
+
         // Array to store concentration differences for each direction
         float[] directionStrengths = new float[6];
-        
-        // Sample all neighbors at the sampling distance
+
+        // Sample all neighbors within the sweep distance
         for (int i = 0; i < 6; i++)
         {
-            // Get the hex in this direction at the sampling distance
-            Hex sampleHex = hex;
-            for (int d = 0; d < samplingDistance; d++)
+            float totalDiff = 0f;
+            int sampleCount = 0;
+
+            // Sample hexes in the direction for the given sweep distance
+            for (int d = 1; d <= samplingDistance; d++)
             {
-                sampleHex = sampleHex.Neighbor(i);
+                Hex sampleHex = hex;
+                for (int j = 0; j < d; j++)
+                {
+                    sampleHex = sampleHex.Neighbor(i);
+                }
+
+                // Get concentration at this sample point
+                float sampleConcentration = GetStrengthAtHex(sampleHex, morphogenID);
+
+                // Calculate difference (gradient) in this direction
+                float diff = sampleConcentration - centerConcentration;
+
+                // Invert the difference if we want to point toward lower concentration
+                if (!towardHigher)
+                    diff = -diff;
+
+                totalDiff += diff;
+                sampleCount++;
             }
-            
-            // Get concentration at this sample point
-            float sampleConcentration = GetStrengthAtHex(sampleHex, morphogenID);
-            
-            // Calculate difference (gradient) in this direction
-            float diff = sampleConcentration - centerConcentration;
-            
-            // Invert the difference if we want to point toward lower concentration
-            if (!towardHigher)
-                diff = -diff;
-                
-            directionStrengths[i] = diff;
+
+            // Average the difference for this direction
+            directionStrengths[i] = sampleCount > 0 ? totalDiff / sampleCount : 0f;
         }
-        
+
         // Find the direction with the maximum strength
         int strongestDirection = -1;
         float maxStrength = float.Epsilon; // Use epsilon to ignore very small differences
-        
+
         for (int i = 0; i < 6; i++)
         {
             if (directionStrengths[i] > maxStrength)
@@ -148,7 +151,7 @@ public class MorphogenManager
                 strongestDirection = i;
             }
         }
-        
+
         if (strongestDirection == -1)
             return hex;
 
@@ -163,37 +166,45 @@ public class MorphogenManager
     /// <param name="samplingDistance">Optional: The distance to sample around the hex (default: 1)</param>
     /// <param name="towardHigher">Optional: If true, points toward higher concentration; if false, toward lower (default: true)</param>
     /// <returns>A normalized Vector2 pointing in the direction of concentration gradient, or Vector2.Zero if no gradient</returns>
-    public Vector2 GetGradientVectorAtHex(Hex hex, string morphogenID, int samplingDistance = 1, bool towardHigher = true)
+    public static Vector2 GetGradientVectorAtHex(Hex hex, string morphogenID, int samplingDistance = 1, bool towardHigher = true)
     {
-        if (!_morphogenDict.TryGetValue(morphogenID, out var targetMorphogen))
+        if (!Morphogens.Contains(morphogenID))
             return Vector2.Zero;
-            
-        // Get the concentration at the center hex
-        float centerConcentration = GetStrengthAtHex(hex, morphogenID);
-        
+
         // Initialize gradient vector
         Vector2 gradientVector = Vector2.Zero;
-        
+
         // Sample all neighbors at the sampling distance
         for (int i = 0; i < 6; i++)
         {
-            // Get the hex in this direction at the sampling distance
-            Hex sampleHex = hex;
-            for (int d = 0; d < samplingDistance; d++)
+            // Initialize total concentration and count for averaging
+            float totalConcentration = 0f;
+            int sampleCount = 0;
+
+            // Sweep area in this direction
+            for (int d = 1; d <= samplingDistance; d++)
             {
-                sampleHex = sampleHex.Neighbor(i);
+                Hex sampleHex = hex.Neighbor(i).Neighbor(i); // Get the hex in this direction at the current distance
+                float sampleConcentration = GetStrengthAtHex(sampleHex, morphogenID);
+
+                // Accumulate concentration
+                totalConcentration += sampleConcentration;
+                sampleCount++;
             }
-            
-            // Get concentration at this sample point
-            float sampleConcentration = GetStrengthAtHex(sampleHex, morphogenID);
-            
+
+            // Calculate average concentration for this direction
+            float averageConcentration = sampleCount > 0 ? totalConcentration / sampleCount : 0f;
+
+            // Get the concentration at the center hex
+            float centerConcentration = GetStrengthAtHex(hex, morphogenID);
+
             // Calculate difference (gradient) in this direction
-            float diff = sampleConcentration - centerConcentration;
-            
+            float diff = averageConcentration - centerConcentration;
+
             // Invert the difference if we want to point toward lower concentration
             if (!towardHigher)
                 diff = -diff;
-            
+
             // If there's a difference, add a vector in this direction proportional to the difference
             if (Math.Abs(diff) > float.Epsilon)
             {
@@ -203,30 +214,33 @@ public class MorphogenManager
                     (float)Math.Cos(angle),
                     (float)Math.Sin(angle)
                 );
-                
+
                 // Add to the gradient vector, weighted by the concentration difference
                 gradientVector += directionVector * diff;
             }
         }
-        
+
         // Normalize the gradient vector (if it's not zero)
         if (gradientVector != Vector2.Zero)
         {
             return Vector2.Normalize(gradientVector);
         }
-        
+
         return Vector2.Zero;
     }
 
-    public IEnumerable<Hex> GetAffectedHexes()
+    public static IEnumerable<Hex> GetAffectedHexes()
     {
         var seen = new HashSet<Hex>();
-        foreach (var (sourceMorphogen, sourceHex) in Sources)
+
+        foreach (var kvp in morphogenStrengthMap)
         {
-            foreach (var hex in Hex.GetHexesInRange(sourceHex, sourceMorphogen.Range))
+            foreach (var hex in kvp.Value.Keys)
             {
                 if (seen.Add(hex))
+                {
                     yield return hex;
+                }
             }
         }
     }

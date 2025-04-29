@@ -24,16 +24,27 @@ public abstract class Cell
     // GUID
     public Guid Id { get; private set; } = Guid.NewGuid();
 
+    // Clock(basically the age of the cell)
+    public int Clock { get; private set; } = 0;
+
+    // Timer When a timer is active, it will emit a marker at the end of the timer
+    // There are multiple timers, so we need a tuple of (marker, time) and
+    // when the timer is up, it will be removed from the list and emit the marker
+    public List<(string marker, int time)> Timers { get; private set; } = [];
     // Common properties
     // Position now has a protected set, accessible internally for movement
     public Hex Position { get; protected set; }
     public abstract CellType Type { get; }
 
+    // Genome property
+    public Genome Genome { get; protected set; } = [];
+
     // Time-related properties for animations and lifecycle
     protected float CreationTime { get; private set; }
 
     // Cell rendering properties
-    protected const int VertexCount = 12;
+    protected const int VertexCount = 8;
+    protected const int VertexCountPerformance = 5;
     protected const float AttachmentStrength = 0.11f;
     protected const float PulsationAmount = 0.03f;
     protected const float PulsationSpeed = 0.7f;
@@ -42,10 +53,11 @@ public abstract class Cell
     public bool IsDead { get; private set; } = false;
 
     // Constructor
-    protected Cell(Hex position)
+    protected Cell(Hex position, Genome? genome = null)
     {
         Position = position;
         CreationTime = (float)Raylib.GetTime();
+        Genome = genome ?? [];
     }
 
     // Chance to die
@@ -68,12 +80,12 @@ public abstract class Cell
     }
     protected (Vector2 center, Vector2[] vertices) CalculateCellShape(HexLayout layout, float cellRadius, ICollection<Cell> neighbors)
     {
-        // ... (CalculateCellShape implementation remains the same) ...
         // Get the center position in screen coordinates
         Vector2 center = layout.HexToPixel(Position);
 
-        // Calculate vertices for a basic cell shape (circle-like polygon)
-        Vector2[] vertices = new Vector2[VertexCount];
+        // Use lower vertex count if performance mode is enabled
+        int vertexCount = CONFIG.PerformanceMode ? VertexCountPerformance : VertexCount;
+        Vector2[] vertices = new Vector2[vertexCount];
 
         // Keep track of which neighbor affects which vertices
         Dictionary<Cell, List<int>> connections = new();
@@ -99,25 +111,28 @@ public abstract class Cell
                     if (distance > 0 && distance < cellRadius * 3)
                     {
                         direction /= distance; // Normalize
-                        neighborData.Add((neighbor, direction, distance*0.9f));
+                        neighborData.Add((neighbor, direction, distance * 0.9f));
                         connections[neighbor] = new List<int>();
                     }
                 }
             }
         }
 
-        // Time-based animation for subtle membrane movement
-        float time = (float)Raylib.GetTime() - CreationTime;
-
         // Generate the cell shape vertices
-        for (int i = 0; i < VertexCount; i++)
+        for (int i = 0; i < vertexCount; i++)
         {
             // Base angle for this vertex
-            float angle = i * MathF.PI * 2.0f / VertexCount;
+            float angle = i * MathF.PI * 2.0f / vertexCount;
 
-            // Calculate the base radius with a slight pulsation
-            float pulsation = 1.0f + MathF.Sin(time * PulsationSpeed + angle * 5) * PulsationAmount;
-            float vertexRadius = cellRadius * pulsation;
+            // If not in performance mode, calculate the base radius with a slight pulsation
+            float vertexRadius = cellRadius;
+            if (!CONFIG.PerformanceMode)
+            {
+                // Time-based animation for subtle membrane movement
+                float time = (float)Raylib.GetTime() - CreationTime;
+                float pulsation = 1.0f + MathF.Sin(time * PulsationSpeed + angle * 5) * PulsationAmount;
+                vertexRadius *= pulsation;
+            }
 
             // Calculate basic vertex position
             Vector2 basePos = new(
@@ -125,33 +140,41 @@ public abstract class Cell
                 MathF.Sin(angle) * vertexRadius
             );
 
-            // Adjust vertex position based on neighbors
-            Vector2 finalPos = basePos;
-            Vector2 vertexDir = Vector2.Normalize(basePos); // Direction from center to vertex
-
-            foreach (var (neighbor, neighborDir, distance) in neighborData)
+            // Adjust vertex position based on neighbors if not in performance mode
+            if (!CONFIG.PerformanceMode)
             {
-                // How much this vertex is facing toward the neighbor
-                float alignment = Vector2.Dot(vertexDir, neighborDir);
+                Vector2 finalPos = basePos;
+                Vector2 vertexDir = Vector2.Normalize(basePos); // Direction from center to vertex
 
-                // Only pull vertices that face the neighbor somewhat
-                if (alignment > 0.4f) // Increased threshold for more targeted attachment
+                foreach (var (neighbor, neighborDir, distance) in neighborData)
                 {
-                    // Pull stronger if vertex direction aligns well with neighbor direction
-                    float pullStrength = alignment * AttachmentStrength;
+                    // How much this vertex is facing toward the neighbor
+                    float alignment = Vector2.Dot(vertexDir, neighborDir);
 
-                    // Pull the vertex toward the neighbor, but careful of overlapping too much
-                    // Use a sigmoid function to control how far the vertex can extend
-                    float maxPull = distance * 0.4f; // Maximum pull is 40% of the distance
-                    float pull = maxPull * (2.0f / (1.0f + MathF.Exp(-pullStrength * 5)) - 1.0f);
+                    // Only pull vertices that face the neighbor somewhat
+                    if (alignment > 0.4f) // Increased threshold for more targeted attachment
+                    {
+                        // Pull stronger if vertex direction aligns well with neighbor direction
+                        float pullStrength = alignment * AttachmentStrength;
 
-                    // Apply the pull
-                    finalPos += neighborDir * pull;
+                        // Pull the vertex toward the neighbor, but careful of overlapping too much
+                        // Use a sigmoid function to control how far the vertex can extend
+                        float maxPull = distance * 0.4f; // Maximum pull is 40% of the distance
+                        float pull = maxPull * (2.0f / (1.0f + MathF.Exp(-pullStrength * 5)) - 1.0f);
+
+                        // Apply the pull
+                        finalPos += neighborDir * pull;
+                    }
                 }
-            }
 
-            // Set final vertex position
-            vertices[i] = center + finalPos;
+                // Set final vertex position
+                vertices[i] = center + finalPos;
+            }
+            else
+            {
+                // Set final vertex position without adjustment for performance mode
+                vertices[i] = center + basePos;
+            }
         }
 
         return (center, vertices);
@@ -185,8 +208,68 @@ public abstract class Cell
     {
         // Check if we're still valid in the grid
         if (!CellExists(grid))
-        {
             return;
+        ShouldDivide = true;
+        EvaluateGenome(grid);
+        Clock++;
+        foreach (var timer in Timers)
+        {
+            if (timer.time >= Clock)
+            {
+                MorphogenManager.Emit(timer.marker, Position);
+                Timers.Remove(timer);
+            }
+        }
+    }
+    public bool ShouldDivide { get; private set; } = true;
+    public void EvaluateGenome(WorldGrid grid)
+    {
+        foreach (var gene in Genome)
+        {
+            var activeConditions = gene.Evaluate(grid, this);
+            foreach (var activeCondition in activeConditions)
+            {
+                // Apply the condition
+                switch (gene.Function)
+                {
+                    case GeneFunction.Morphology:
+                        // Emit the markers
+                        MorphogenManager.Emit(gene.OutputMarker, Position, activeCondition.Range);
+                        break;
+                    case GeneFunction.StartTimer:
+                        Timers.Add((gene.OutputMarker, Clock + activeCondition.Range));
+                        break;
+                    case GeneFunction.Apoptosis:
+                        Die(1);
+                        break;
+                    case GeneFunction.NoDivision:
+                        ShouldDivide = false;
+                        break;
+                    case GeneFunction.Specialization:
+                        if (Type == CellType.Stem)
+                        {
+                            switch (gene.OutputMarker)
+                            {
+                                case "SKIN":
+                                    grid.PlaceCell(Position, CellType.Skin, Genome);
+                                    break;
+                                case "FLESH":
+                                    grid.PlaceCell(Position, CellType.Flesh, Genome);
+                                    break;
+                            }
+                        }
+                        break;
+                    case GeneFunction.Movement:
+                        // Direction is determined by the condition
+                        var direction = MorphogenManager.GetGradientAtHex(
+                            Position,
+                            activeCondition.MovementTarget!,
+                            activeCondition.Range,
+                            !activeCondition.IsMovementAway);
+                        grid.MoveCell(Position, Position + direction);
+                        break;
+                }
+            }
         }
     }
 
@@ -221,8 +304,10 @@ public abstract class Cell
     /// <summary>
     /// Checks conditions for division and returns a new cell if division occurs.
     /// </summary>
-    protected virtual void TryDivide(WorldGrid grid)
+    public virtual void TryDivide(WorldGrid grid)
     {
+        if (Raylib.GetFPS() < CONFIG.MinFrameRate)
+            return;
         // Find empty neighbors at the *current* position
         var emptyNeighbors = GetEmptyNeighborHexes(grid);
 
@@ -237,10 +322,10 @@ public abstract class Cell
             // This check is important but the primary check/resolution happens in UpdateCellDivision when adding.
             if (!grid.IsOccupied(targetHex))
             {
-                 // Create the offspring
-                 Cell newCell = CreateDivisionOffspring(targetHex);
+                // Create the offspring
+                Cell newCell = CreateDivisionOffspring(targetHex);
 
-                 grid.AddCell(newCell);
+                grid.AddCell(newCell);
             }
         }
     }
@@ -248,7 +333,7 @@ public abstract class Cell
     /// <summary>
     /// Gets a list of adjacent hexes that are within bounds and not occupied.
     /// </summary>
-    protected List<Hex> GetEmptyNeighborHexes(WorldGrid grid)
+    public List<Hex> GetEmptyNeighborHexes(WorldGrid grid)
     {
         List<Hex> emptyNeighbors = [];
         for (int i = 0; i < 6; i++)
@@ -266,15 +351,14 @@ public abstract class Cell
     protected abstract Cell CreateDivisionOffspring(Hex targetPosition);
 
     // Factory method remains the same
-    public static Cell CreateCell(CellType type, Hex position)
+    public static Cell? CreateCell(CellType type, Hex position, Genome? genome = null)
     {
-        // ... (implementation remains the same) ...
         return type switch
         {
-            CellType.Stem => new StemCell(position),
-            CellType.Flesh => new FleshCell(position),
-            CellType.Skin => new SkinCell(position),
-            _ => throw new ArgumentException($"Unknown cell type: {type}")
+            CellType.Stem => new StemCell(position, genome),
+            CellType.Flesh => new FleshCell(position, genome),
+            CellType.Skin => new SkinCell(position, genome),
+            _ => null
         };
     }
 }
@@ -298,7 +382,7 @@ public abstract class BasicCell : Cell
     protected abstract Color MembraneColor { get; }
     protected abstract float MembraneThickness { get; }
 
-    protected BasicCell(Hex position) : base(position)
+    protected BasicCell(Hex position, Genome? genome = null) : base(position, genome)
     {
         // Calculate stable, position-dependent offset
         int positionHash = Position.GetHashCode();
@@ -337,32 +421,32 @@ public abstract class BasicCell : Cell
         float nucleusRadius = cellRadius * NucleusRadiusRatio;
         float animationTime = (float)Raylib.GetTime() - CreationTime;
         float animationFactor = MathF.Sin(animationTime * AnimationSpeedFactor + animationPhase) * AnimationAmount;
-        
+
         // Calculate nucleus offset
         Vector2 animatedOffset = new(
             MathF.Cos(offsetAngle + animationTime * AnimationSpeedFactor) * offsetMagnitude * (1.0f + animationFactor),
             MathF.Sin(offsetAngle + animationTime * AnimationSpeedFactor) * offsetMagnitude * (1.0f + animationFactor)
         );
-        
+
         // Calculate nucleus position
         Vector2 nucleusCenter = new(
             center.X + (animatedOffset.X * cellRadius),
             center.Y + (animatedOffset.Y * cellRadius)
         );
-        
+
         // Draw nucleus
         Raylib.DrawCircleV(nucleusCenter, nucleusRadius, NucleusColor);
     }
-    
+
     // Create a new cell of the same type
     protected override Cell CreateDivisionOffspring(Hex targetPosition)
     {
-        // Use the factory method to create a new cell of the same type
-        return Cell.CreateCell(this.Type, targetPosition);
+        // Use the factory method to create a new cell of the same type with the same genome
+        return Cell.CreateCell(Type, targetPosition, [.. Genome])!;
     }
 }
 
-public class StemCell(Hex position) : BasicCell(position)
+public class StemCell(Hex position, Genome? genome = null) : BasicCell(position, genome)
 {
     // Color constants
     protected override Color MainColor => new(210, 200, 180, 150); // Washed out beige
@@ -372,16 +456,19 @@ public class StemCell(Hex position) : BasicCell(position)
     protected override float MembraneThickness => 5.0f;
 
     public override CellType Type => CellType.Stem;
-
+    static StemCell()
+    {
+        MorphogenManager.RegisterMorphogen("Ms");
+    }
     override public void Update(WorldGrid grid)
     {
         base.Update(grid);
 
-        grid.MorphogenManager.Emit("T0", Position);
+        MorphogenManager.Emit("Ms", Position);
     }
 }
 
-public class FleshCell(Hex position) : BasicCell(position)
+public class FleshCell(Hex position, Genome? genome = null) : BasicCell(position, genome)
 {
     // Color constants
     protected override Color MainColor => new(220, 80, 60, 230); // Warm coral
@@ -390,10 +477,21 @@ public class FleshCell(Hex position) : BasicCell(position)
     protected override float NucleusRadiusRatio => 0.14f;
     protected override float MembraneThickness => 3.0f;
 
+    static FleshCell()
+    {
+        MorphogenManager.RegisterMorphogen("Mf");
+    }
+
     public override CellType Type => CellType.Flesh;
+    override public void Update(WorldGrid grid)
+    {
+        base.Update(grid);
+
+        MorphogenManager.Emit("Mf", Position);
+    }
 }
 
-public class SkinCell(Hex position) : BasicCell(position)
+public class SkinCell(Hex position, Genome? genome = null) : BasicCell(position, genome)
 {
     // Color constants
     protected override Color MainColor => new(240, 220, 180, 230); // Soft beige
@@ -403,4 +501,14 @@ public class SkinCell(Hex position) : BasicCell(position)
     protected override float MembraneThickness => 4.0f;
 
     public override CellType Type => CellType.Skin;
+    static SkinCell()
+    {
+        MorphogenManager.RegisterMorphogen("Msk");
+    }
+    override public void Update(WorldGrid grid)
+    {
+        base.Update(grid);
+
+        MorphogenManager.Emit("Msk", Position);
+    }
 }
