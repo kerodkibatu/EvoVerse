@@ -52,7 +52,7 @@ public static class MorphogenManager
 
         if (!morphogenStrengthMap.TryGetValue(morphogenID, out var strengthDict))
         {
-            strengthDict = new Dictionary<Hex, float>();
+            strengthDict = [];
             morphogenStrengthMap[morphogenID] = strengthDict;
         }
 
@@ -70,7 +70,8 @@ public static class MorphogenManager
             return 1f;
 
         int distance = sourceHex.Distance(targetHex);
-        return distance <= range ? 1f - (distance / (float)range) : 0f;
+        // Adjust the strength calculation to account for the new range definition
+        return distance <= range ? 1f - (distance / (float)(range + 1)) : 0f;
     }
 
     public static float GetStrengthAtHex(Hex hex, string morphogenID)
@@ -244,4 +245,5 @@ public static class MorphogenManager
             }
         }
     }
+
 }

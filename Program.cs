@@ -128,7 +128,7 @@ void Update()
         // Check for visibility settings
         if (!MorphogenVisibility.ContainsKey(morphogen))
         {
-            MorphogenVisibility[morphogen] = true; // Default to visible
+            MorphogenVisibility[morphogen] = false; // Default to invisible
         }
         
         // Check for color settings
@@ -172,6 +172,9 @@ void Update()
 
         // Update plot
         UpdatePlot();
+
+        // Update morphogens and cache
+        World.UpdateMorphogens();
     }
 
     // --- Input Handling (Camera, Cell Placement) ---
@@ -325,23 +328,30 @@ void DrawHexOutline(Hex hex, Color color, float borderWidth = 2f)
     }
 }
 
+void DrawHexFill(Hex hex, Color color)
+{
+    var center = Layout.HexToPixel(hex);
+    List<Vector2> corners = [center, .. Layout.PolygonCorners(hex).OrderBy(c => -Math.Atan2(c.Y - center.Y, c.X - center.X))];
+    corners.Add(corners[1]);
+    RL.DrawTriangleFan([.. corners], corners.Count, color);
+}
+
 void DrawMorphogen(Hex hex)
 {
     // Cache the pixel position of the hex to avoid recalculating it for each morphogen
     Vector2 hexPosition = Layout.HexToPixel(hex);
     
-    // Use a single loop to minimize overhead
-    foreach (var morphogen in MorphogenManager.Morphogens)
+    var hexStates = World.GetMorphogensAtHex(hex);
+    if (hexStates != null)
     {
-        if (MorphogenVisibility.TryGetValue(morphogen, out bool isVisible) && isVisible)
+        foreach (var (morphogen, strength) in hexStates)
         {
-            Color displayColor = MorphogenColors[morphogen];
-            float strength = MorphogenManager.GetStrengthAtHex(hex, morphogen);
-            if (strength > 0) // Only draw if there's a strength
+            if (MorphogenVisibility.TryGetValue(morphogen, out bool isVisible) && isVisible)
             {
-                float radius = 0.5f * strength * Layout.Size.X;
-                byte alpha = (byte)(strength * displayColor.A);
-                RL.DrawPoly(hexPosition, 8, radius, 0, new Color(displayColor.R, displayColor.G, displayColor.B, alpha));
+                Color displayColor = MorphogenColors[morphogen];
+                float radius = 0.8f * Layout.Size.X;
+                byte alpha = (byte)(0.9f * strength * displayColor.A);
+                DrawHexFill(hex, new Color(displayColor.R, displayColor.G, displayColor.B, alpha));
             }
         }
     }
@@ -351,7 +361,7 @@ void Draw()
 {
     RL.ClearBackground(BackgroundColor);
 
-    // --- 1. Draw Grid Lines ---
+    // --- Draw Grid Lines ---
     foreach (Hex hex in World.GetHexesInRadius())
     {
         if (World.Layout.IsInView(hex) && World.IsWithinBounds(hex))
@@ -363,17 +373,7 @@ void Draw()
         }
     }
 
-    // --- 2. Draw Morphogens ---
-    var affectedHexes = MorphogenManager.GetAffectedHexes().ToArray();
-    foreach (var affectedHex in affectedHexes)
-    {
-        if (World.IsWithinBounds(affectedHex) && World.Layout.IsInView(affectedHex))
-        {
-            DrawMorphogen(affectedHex);
-        }
-    }
-
-    // --- 3. Draw Cells ---
+    // --- Draw Cells ---
     var allCells = World.GetAllCells().ToArray();
     foreach (Cell cell in allCells)
     {
@@ -391,7 +391,16 @@ void Draw()
         }
     }
 
-    // --- 3. Draw Hover Outline ---
+    // --- 2. Draw Morphogens ---
+    foreach (var hex in World.GetHexesInRadius())
+    {
+        if (World.IsWithinBounds(hex) && World.Layout.IsInView(hex))
+        {
+            DrawMorphogen(hex);
+        }
+    }
+
+    // --- Draw Hover Outline ---
     bool isHoverValid = !IsInputCapturedByUI() && World.IsWithinBounds(HoveredHex);
     if (isHoverValid)
     {
@@ -424,19 +433,25 @@ void Draw()
             string tooltipText = $"Hex: {HoveredHex}\n";
             tooltipText += $"ID: {(hoveredCell != null ? hoveredCell.Id.ToString().Substring(0, 8) : "None")}\n";
             tooltipText += $"Type: {(hoveredCell != null ? CellTypeStringCache[hoveredCell.Type] : "None")}\n";
-
-            if (MorphogenManager.Morphogens.Any())
+            if (hoveredCell != null)
             {
+                tooltipText += $"Clock: {hoveredCell.Clock}\n";
+            }
+
+            var hexStates = World.GetMorphogensAtHex(HoveredHex);
+            if (hexStates != null)
+            {
+                tooltipText += "=========\n";
                 tooltipText += "Morphogens:\n";
-                foreach (var morphogen in MorphogenManager.Morphogens)
+                foreach (var (morphogen, strength) in hexStates)
                 {
-                    if (MorphogenVisibility[morphogen])
+                    if (World.GetMorphogenStrength(HoveredHex, morphogen) > 0)
                     {
-                        float strength = MorphogenManager.GetStrengthAtHex(HoveredHex, morphogen);
                         tooltipText += $"  {morphogen}: {strength:F2}\n";
                     }
                 }
             }
+            tooltipText += "=========\n";
 
             float padding = 10;
             Vector2 textSize = RL.MeasureTextEx(UIFont, tooltipText, 20, 1);
@@ -451,7 +466,7 @@ void Draw()
         }
     }
 
-    // --- 4. Draw UI ---
+    // ---  Draw UI ---
     rlImGui.Begin();
     DrawInfoPanel(isHoverValid, 0.25f);
     DrawSimulationControls();
@@ -734,15 +749,25 @@ void DrawSimulationControls()
         }
         ImGui.SameLine();
 
+        // History Controls
+        ImGui.BeginDisabled(CurrentSimulationState == SimulationState.Editing || World.GetCurrentHistoryIndex() <= 0);
+        if (ImGui.Button("<", new Vector2(60, 0)))
+        {
+            World.StepBack();
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Step back one simulation step");
+        ImGui.EndDisabled();
+        ImGui.SameLine();
         // Step Button
         ImGui.BeginDisabled(CurrentSimulationState == SimulationState.Editing); // Can step when paused or running
-        if (ImGui.Button("Step (>|)", new Vector2(100, 0)))
+        if (ImGui.Button(">", new Vector2(60, 0)))
         {
             StepRequested = true;
         }
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Execute one simulation step\n(Will pause if running)");
         ImGui.EndDisabled();
         ImGui.SameLine();
+
 
         // Edit/Simulate Toggle Button
         string editModeLabel = CurrentSimulationState == SimulationState.Editing ? "Sim" : "Edit";
@@ -773,6 +798,8 @@ void DrawSimulationControls()
         if (simulationSpeed < 0.1f) simulationSpeed = 0.1f; // Prevent zero/negative speed from slider interaction
         ImGui.PopItemWidth();
 
+        // History Info
+        ImGui.Text($"History: {World.GetCurrentHistoryIndex() + 1}/{World.GetHistorySize()}");
     }
     ImGui.End();
 }

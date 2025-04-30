@@ -4,12 +4,20 @@ namespace EvoVerse;
 
 public class WorldGrid
 {
-    private readonly Dictionary<Hex, Cell> _cells = [];
+    private readonly Dictionary<Hex, Cell> _cells = new();
     public HexLayout Layout { get; private set; }
     public int MapRadius { get; private set; }
     private List<Hex>? _cachedHexesInRadius;
     private int _cachedRadius;
-    private static readonly Hex OriginHex = new(0, 0);
+    public static Hex OriginHex => new(0, 0);
+
+    // Add morphogen cache
+    private Dictionary<Hex, Dictionary<string, float>> _morphogenCache = new();
+
+    // Simulation history
+    private List<SimulationHistoryState> _history = new();
+    private int _currentHistoryIndex = -1;
+    private const int MaxHistorySize = 1000; // Maximum number of states to keep in history
 
     public WorldGrid(HexLayout initialLayout, int mapRadius)
     {
@@ -24,18 +32,25 @@ public class WorldGrid
 
     public void Update()
     {        
-        MorphogenManager.Update();
-
+        // Save current state before updating
+        SaveCurrentState();
+        
         var cellsToRemove = new List<Hex>(_cells.Count / 10); // Estimate 10% might die
         var cellsToDivide = new List<Hex>(_cells.Count); // Estimate all might divide
+        List<(string,Hex,int)> emittedMarkers = [];
         for (int i = _cells.Count - 1; i >= 0; i--)
         {
             var kvp = _cells.ElementAt(i);
-            kvp.Value.Update(this);
+            emittedMarkers.AddRange(kvp.Value.Update(this));
             if (kvp.Value.IsDead)
                 cellsToRemove.Add(kvp.Key);
             else if (kvp.Value.ShouldDivide)
                 cellsToDivide.Add(kvp.Key);
+        }
+        // Emit all markers
+        foreach (var (marker, hex, range) in emittedMarkers)
+        {
+            MorphogenManager.Emit(marker, hex, range);
         }
 
         foreach (var hex in cellsToRemove)
@@ -44,6 +59,94 @@ public class WorldGrid
         foreach (var hex in cellsToDivide)
             GetCell(hex)?.TryDivide(this);
     }
+
+    // Save current state to history
+    private void SaveCurrentState()
+    {
+        var state = new SimulationHistoryState();
+        
+        // Copy cells
+        foreach (var kvp in _cells)
+        {
+            state.Cells[kvp.Key] = kvp.Value;
+        }
+        
+        // Copy morphogens
+        foreach (var kvp in _morphogenCache)
+        {
+            state.Morphogens[kvp.Key] = new Dictionary<string, float>(kvp.Value);
+        }
+        
+        // Add to history
+        _currentHistoryIndex++;
+        
+        // If we're not at the end of history, remove future states
+        if (_currentHistoryIndex < _history.Count)
+        {
+            _history.RemoveRange(_currentHistoryIndex, _history.Count - _currentHistoryIndex);
+        }
+        
+        _history.Add(state);
+        
+        // Trim history if too large
+        if (_history.Count > MaxHistorySize)
+        {
+            _history.RemoveAt(0);
+            _currentHistoryIndex--;
+        }
+    }
+
+    // Restore state from history
+    public bool RestoreState(int index)
+    {
+        if (index < 0 || index >= _history.Count)
+            return false;
+            
+        var state = _history[index];
+        
+        // Clear current state
+        _cells.Clear();
+        _morphogenCache.Clear();
+        
+        // Restore cells
+        foreach (var kvp in state.Cells)
+        {
+            _cells[kvp.Key] = kvp.Value;
+        }
+        
+        // Restore morphogens
+        foreach (var kvp in state.Morphogens)
+        {
+            _morphogenCache[kvp.Key] = new Dictionary<string, float>(kvp.Value);
+        }
+        
+        _currentHistoryIndex = index;
+        return true;
+    }
+
+    // Step back one state
+    public bool StepBack()
+    {
+        if (_currentHistoryIndex <= 0)
+            return false;
+            
+        return RestoreState(_currentHistoryIndex - 1);
+    }
+
+    // Step forward one state
+    public bool StepForward()
+    {
+        if (_currentHistoryIndex >= _history.Count - 1)
+            return false;
+            
+        return RestoreState(_currentHistoryIndex + 1);
+    }
+
+    // Get current history index
+    public int GetCurrentHistoryIndex() => _currentHistoryIndex;
+    
+    // Get total history size
+    public int GetHistorySize() => _history.Count;
 
     public Cell? GetCell(Hex hex) => _cells.TryGetValue(hex, out var cell) ? cell : null;
 
@@ -109,14 +212,55 @@ public class WorldGrid
         // Read the GEL file
         _genome = GEL_Parser.ParseGEL(File.ReadAllText("TEST.GEL"));
         Console.WriteLine(_genome);
-
         // Create all CellTypes once to ensure they are registered
         foreach (var cellType in Enum.GetValues<CellType>())
         {
             _ = Cell.CreateCell(cellType, OriginHex);
         }
         _cells.Clear();
+        _morphogenCache.Clear(); // Clear morphogen cache
         MorphogenManager.Update();
         PlaceCell(OriginHex, CellType.Stem, _genome);
+    }
+
+    // Add method to update morphogen cache
+    public void UpdateMorphogens()
+    {
+        _morphogenCache.Clear();
+        var affectedHexes = MorphogenManager.GetAffectedHexes().ToArray();
+        foreach (var hex in affectedHexes)
+        {
+            var hexStates = new Dictionary<string, float>();
+            foreach (var morphogen in MorphogenManager.Morphogens)
+            {
+                float strength = MorphogenManager.GetStrengthAtHex(hex, morphogen);
+                if (strength > 0)
+                {
+                    hexStates[morphogen] = strength;
+                }
+            }
+            if (hexStates.Count > 0)
+            {
+                _morphogenCache[hex] = hexStates;
+            }
+        }
+        MorphogenManager.Update();
+    }
+
+    // Add method to get morphogen strength from cache
+    public float GetMorphogenStrength(Hex hex, string morphogen)
+    {
+        if (_morphogenCache.TryGetValue(hex, out var hexStates) &&
+            hexStates.TryGetValue(morphogen, out var strength))
+        {
+            return strength;
+        }
+        return 0f;
+    }
+
+    // Add method to get all morphogens at a hex
+    public Dictionary<string, float>? GetMorphogensAtHex(Hex hex)
+    {
+        return _morphogenCache.TryGetValue(hex, out var hexStates) ? hexStates : null;
     }
 }

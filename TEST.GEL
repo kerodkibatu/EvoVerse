@@ -1,9 +1,10 @@
-M0 => [M0]
+M0 => [M0] [Ms n(0)]
 M1 => [M1]
-M2 => [M2]
-tm0 => [tm1]
-tm1 => [M0]
-M3 => [M4]1
-M4 => [Ms n(>2)]10
-NODIV => [n(>2)]
-SKIN => [n(>=3)]
+M2 => [M2] [tmSkDiv]
+M6 => [Ms M0]7
+M7 => [Ms M2 !M6]1 [Ms !M0 M6 M7]1
+M9 => [Mfl n(<6)]1
+tmSkDiv => [Ms]1
+NODIV => [Ms !M0 !M6] [Msk !M9] [Mfl !M6]
+SKIN => [Ms !M6 M2]
+FLESH => [Ms !M0 M6 M7 n(6)]

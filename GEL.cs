@@ -76,7 +76,7 @@ public class ConditionSet
     public Dictionary<int, ComparisonType> NeighborConditions { get; set; } = [];
 
     // Range or timer value
-    public int Range { get; set; } = 1;
+    public int Range { get; set; } = 0;
 
     // Target marker for movement genes (what to move toward or away from)
     public string? MovementTarget { get; set; }
@@ -109,19 +109,20 @@ public class ConditionSet
     {
         foreach (var marker in ActiveMarkers)
         {
-            if (MorphogenManager.GetStrengthAtHex(cell.Position, marker) == 0)
+            if (grid.GetMorphogenStrength(cell.Position, marker) == 0)
             {
                 return false;
             }
         }
         foreach (var marker in InhibitedMarkers)
         {
-            if (MorphogenManager.GetStrengthAtHex(cell.Position, marker) > 0)
+            if (grid.GetMorphogenStrength(cell.Position, marker) > 0)
             {
                 return false;
             }
         }
-        bool neighborConditionMet = false;
+        // TODO: Fix this
+        bool neighborConditionMet = true; // Assume true until proven otherwise
         foreach (var condition in NeighborConditions)
         {
             var A = 6 - cell.GetEmptyNeighborHexes(grid).Count;
@@ -129,26 +130,29 @@ public class ConditionSet
             switch (condition.Value)
             {
                 case ComparisonType.Equals:
-                    if (A == B) neighborConditionMet = true;
-                    return false;
+                    if (A != B) neighborConditionMet = false;
+                    break;
                 case ComparisonType.NotEquals:
-                    if (A != B) neighborConditionMet = true;
-                    return false;
+                    if (A == B) neighborConditionMet = false;
+                    break;
                 case ComparisonType.GreaterThan:
-                    if (A <= B) neighborConditionMet = true;
-                    return false;
+                    if (A <= B) neighborConditionMet = false;
+                    break;
                 case ComparisonType.LessThan:
-                    if (A >= B) neighborConditionMet = true;
-                    return false;
+                    if (A >= B) neighborConditionMet = false;
+                    break;
                 case ComparisonType.GreaterThanOrEqual:
-                    if (A < B) neighborConditionMet = true;
-                    return false;
+                    if (A < B) neighborConditionMet = false;
+                    break;
                 case ComparisonType.LessThanOrEqual:
-                    if (A > B) neighborConditionMet = true;
-                    return false;
+                    if (A > B) neighborConditionMet = false;
+                    break;
                 default:
-                    return false;
+                    neighborConditionMet = false;
+                    break;
             }
+            // If any condition fails, we can exit early
+            if (!neighborConditionMet) break;
         }
         return neighborConditionMet;
     }
@@ -170,7 +174,7 @@ public class ConditionSet
     public override string ToString()
     {
         var activeStr = string.Join(" ", ActiveMarkers.Select(m => m.ToString()));
-        var inhibitedStr = string.Join(" ", InhibitedMarkers.Select(m => "-" + m.ToString()));
+        var inhibitedStr = string.Join(" ", InhibitedMarkers.Select(m => "!" + m.ToString()));
         var markers = activeStr + (string.IsNullOrEmpty(activeStr) || string.IsNullOrEmpty(inhibitedStr) ? "" : " ") + inhibitedStr;
 
         var neighborStr = "";
@@ -179,7 +183,7 @@ public class ConditionSet
             neighborStr += $" n({ComparisonToString(condition.Value)}{condition.Key})";
         }
 
-        var rangeStr = Range > 1 ? Range.ToString() : "";
+        var rangeStr = Range > 0 ? Range.ToString() : "";
 
         if (MovementTarget != null)
         {
@@ -332,7 +336,7 @@ public static class GEL_Parser
             // Parse range if present
             if (bracketMatch.Groups[2].Success)
             {
-                if (!int.TryParse(bracketMatch.Groups[2].Value, out var range) || range < 1)
+                if (!int.TryParse(bracketMatch.Groups[2].Value, out var range))
                 {
                     throw new GELParseException($"Invalid range value: '{bracketMatch.Groups[2].Value}'. Range must be a positive integer");
                 }
@@ -392,7 +396,7 @@ public static class GEL_Parser
                     }
                     conditionSet.AddNeighborCondition(count, comparisonType);
                 }
-                else if (marker.StartsWith("-"))
+                else if (marker.StartsWith("!"))
                 {
                     // Parse inhibited marker
                     var markerName = marker[1..];

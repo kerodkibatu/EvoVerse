@@ -25,12 +25,12 @@ public abstract class Cell
     public Guid Id { get; private set; } = Guid.NewGuid();
 
     // Clock(basically the age of the cell)
-    public int Clock { get; private set; } = 0;
+    public int Clock { get; set; } = 0;
 
     // Timer When a timer is active, it will emit a marker at the end of the timer
     // There are multiple timers, so we need a tuple of (marker, time) and
     // when the timer is up, it will be removed from the list and emit the marker
-    public List<(string marker, int time)> Timers { get; private set; } = [];
+    public List<(string marker, int time)> Timers { get; set; } = [];
     // Common properties
     // Position now has a protected set, accessible internally for movement
     public Hex Position { get; protected set; }
@@ -43,7 +43,7 @@ public abstract class Cell
     protected float CreationTime { get; private set; }
 
     // Cell rendering properties
-    protected const int VertexCount = 8;
+    protected const int VertexCount = 16;
     protected const int VertexCountPerformance = 5;
     protected const float AttachmentStrength = 0.11f;
     protected const float PulsationAmount = 0.03f;
@@ -204,26 +204,29 @@ public abstract class Cell
     /// </summary>
     /// <param name="grid">The world grid for interaction.</param>
     /// <returns>A new Cell if division occurs, otherwise null.</returns>
-    public virtual void Update(WorldGrid grid)
+    public virtual List<(string,Hex,int)> Update(WorldGrid grid)
     {
         // Check if we're still valid in the grid
         if (!CellExists(grid))
-            return;
-        ShouldDivide = true;
-        EvaluateGenome(grid);
+            return [];
+        ShouldDivide = Clock != 0;
+        var emittedMarkers = EvaluateGenome(grid);
         Clock++;
-        foreach (var timer in Timers)
+        for (int i = Timers.Count - 1; i >= 0; i--)
         {
-            if (timer.time >= Clock)
+            var (marker, time) = Timers[i];
+            if (time == Clock)
             {
-                MorphogenManager.Emit(timer.marker, Position);
-                Timers.Remove(timer);
+                emittedMarkers.Add((marker, Position, 0));
+                Timers.RemoveAt(i);
             }
         }
+        return emittedMarkers;
     }
     public bool ShouldDivide { get; private set; } = true;
-    public void EvaluateGenome(WorldGrid grid)
+    public List<(string,Hex,int)> EvaluateGenome(WorldGrid grid)
     {
+        List<(string,Hex,int)> emittedMarkers = [];
         foreach (var gene in Genome)
         {
             var activeConditions = gene.Evaluate(grid, this);
@@ -234,10 +237,13 @@ public abstract class Cell
                 {
                     case GeneFunction.Morphology:
                         // Emit the markers
-                        MorphogenManager.Emit(gene.OutputMarker, Position, activeCondition.Range);
+                        emittedMarkers.Add((gene.OutputMarker, Position, activeCondition.Range));
                         break;
                     case GeneFunction.StartTimer:
-                        Timers.Add((gene.OutputMarker, Clock + activeCondition.Range));
+                        if (!Timers.Any(t => t.marker == gene.OutputMarker))
+                        {
+                            Timers.Add((gene.OutputMarker, Clock + activeCondition.Range));
+                        }
                         break;
                     case GeneFunction.Apoptosis:
                         Die(1);
@@ -271,6 +277,7 @@ public abstract class Cell
                 }
             }
         }
+        return emittedMarkers;
     }
 
     public bool CellExists(WorldGrid grid)
@@ -324,7 +331,8 @@ public abstract class Cell
             {
                 // Create the offspring
                 Cell newCell = CreateDivisionOffspring(targetHex);
-
+                newCell.ShouldDivide = false;
+                Clock = 0;
                 grid.AddCell(newCell);
             }
         }
@@ -446,7 +454,7 @@ public abstract class BasicCell : Cell
     }
 }
 
-public class StemCell(Hex position, Genome? genome = null) : BasicCell(position, genome)
+public class StemCell : BasicCell
 {
     // Color constants
     protected override Color MainColor => new(210, 200, 180, 150); // Washed out beige
@@ -460,43 +468,49 @@ public class StemCell(Hex position, Genome? genome = null) : BasicCell(position,
     {
         MorphogenManager.RegisterMorphogen("Ms");
     }
-    override public void Update(WorldGrid grid)
+    public StemCell(Hex position, Genome? genome = null) : base(position, genome)
     {
-        base.Update(grid);
-
-        MorphogenManager.Emit("Ms", Position);
+        MorphogenManager.Emit("Ms", Position, 0);
+    }
+    override public List<(string,Hex,int)> Update(WorldGrid grid)
+    {
+        var emittedMarkers = base.Update(grid);
+        emittedMarkers.Add(("Ms", Position, 0));
+        return emittedMarkers;
     }
 }
 
-public class FleshCell(Hex position, Genome? genome = null) : BasicCell(position, genome)
+public class FleshCell : BasicCell
 {
     // Color constants
-    protected override Color MainColor => new(220, 80, 60, 230); // Warm coral
-    protected override Color NucleusColor => new(160, 40, 30, 240); // Deep red
-    protected override Color MembraneColor => new(240, 120, 90, 220); // Soft orange
+    protected override Color MainColor => new(220, 80, 60, 150); // Warm coral
+    protected override Color NucleusColor => new(160, 40, 30, 150); // Deep red
+    protected override Color MembraneColor => new(240, 120, 90, 150); // Soft orange
     protected override float NucleusRadiusRatio => 0.14f;
     protected override float MembraneThickness => 3.0f;
-
     static FleshCell()
     {
-        MorphogenManager.RegisterMorphogen("Mf");
+        MorphogenManager.RegisterMorphogen("Mfl");
     }
-
-    public override CellType Type => CellType.Flesh;
-    override public void Update(WorldGrid grid)
+    public FleshCell(Hex position, Genome? genome = null) : base(position, genome)
     {
-        base.Update(grid);
-
-        MorphogenManager.Emit("Mf", Position);
+        MorphogenManager.Emit("Mfl", Position, 0);
+    }
+    public override CellType Type => CellType.Flesh;
+    override public List<(string,Hex,int)> Update(WorldGrid grid)
+    {
+        var emittedMarkers = base.Update(grid);
+        emittedMarkers.Add(("Mfl", Position, 0));
+        return emittedMarkers;
     }
 }
 
-public class SkinCell(Hex position, Genome? genome = null) : BasicCell(position, genome)
+public class SkinCell : BasicCell
 {
     // Color constants
-    protected override Color MainColor => new(240, 220, 180, 230); // Soft beige
-    protected override Color NucleusColor => new(180, 160, 120, 240); // Deep taupe
-    protected override Color MembraneColor => new(250, 230, 200, 220); // Light tan
+    protected override Color MainColor => new(0, 100, 0, 150); // Darker green
+    protected override Color NucleusColor => new(0, 80, 0, 150); // Darker green variant
+    protected override Color MembraneColor => new(0, 120, 0, 150); // Darker green with lighter shade
     protected override float NucleusRadiusRatio => 0.2f;
     protected override float MembraneThickness => 4.0f;
 
@@ -505,10 +519,14 @@ public class SkinCell(Hex position, Genome? genome = null) : BasicCell(position,
     {
         MorphogenManager.RegisterMorphogen("Msk");
     }
-    override public void Update(WorldGrid grid)
+    public SkinCell(Hex position, Genome? genome = null) : base(position, genome)
     {
-        base.Update(grid);
-
-        MorphogenManager.Emit("Msk", Position);
+        MorphogenManager.Emit("Msk", Position, 0);
+    }
+    override public List<(string,Hex,int)> Update(WorldGrid grid)
+    {
+        var emittedMarkers = base.Update(grid);
+        emittedMarkers.Add(("Msk", Position, 0));
+        return emittedMarkers;
     }
 }
