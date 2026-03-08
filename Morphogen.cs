@@ -20,6 +20,7 @@ public static class MorphogenManager
 {
     public static HashSet<string> Morphogens { get; } = new();
     private static Dictionary<string, Dictionary<Hex, float>> morphogenStrengthMap = new();
+    [ThreadStatic] private static List<Hex>? _emitBuffer;
 
     public static void RegisterMorphogen(string morphogenID)
     {
@@ -46,17 +47,22 @@ public static class MorphogenManager
         if (!Morphogens.Contains(morphogenID))
             throw new System.Exception($"Morphogen with ID {morphogenID} not found");
 
-        IEnumerable<Hex> hexesInRange = range == 0
-            ? [hex]
-            : Hex.GetHexesInRange(hex, range);
-
         if (!morphogenStrengthMap.TryGetValue(morphogenID, out var strengthDict))
         {
             strengthDict = [];
             morphogenStrengthMap[morphogenID] = strengthDict;
         }
 
-        foreach (var h in hexesInRange)
+        if (range == 0)
+        {
+            strengthDict.TryGetValue(hex, out float current);
+            strengthDict[hex] = current + 1f;
+            return;
+        }
+
+        _emitBuffer ??= [];
+        Hex.GetHexesInRange(hex, range, _emitBuffer);
+        foreach (var h in _emitBuffer)
         {
             float strength = CalculateStrength(hex, h, range);
             strengthDict.TryGetValue(h, out float current);

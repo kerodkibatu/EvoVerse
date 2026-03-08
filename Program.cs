@@ -1,4 +1,4 @@
-﻿using Raylib_cs;
+using Raylib_cs;
 using RL = Raylib_cs.Raylib;
 using System.Numerics;
 using EvoVerse;
@@ -15,7 +15,8 @@ const float MinZoom = 10f;
 const float MaxZoom = 300f;
 
 // --- Colors ---
-Color BackgroundColor = new(220, 248, 255, 255); // AliceBlue
+Color BackgroundColor = new(220, 248, 255, 255); // AliceBlue - world area
+Color OutsideWorldColor = new(180, 190, 200, 255); // Gray - outside circular world
 Color HoverOutlineColor = new(100, 110, 120, 255);
 Color BorderColor = new(150, 150, 150, 40); // Semi-transparent gray for border hexes
 
@@ -359,12 +360,20 @@ void DrawMorphogen(Hex hex)
 
 void Draw()
 {
-    RL.ClearBackground(BackgroundColor);
+    RL.ClearBackground(OutsideWorldColor);
+
+    // --- Draw circular world background ---
+    float worldRadiusPx = HexSize.X * MathF.Sqrt(3f) * (MapRadius + 0.6f);
+    RL.DrawCircleV(GridOrigin, worldRadiusPx, BackgroundColor);
+
+    int screenW = RL.GetScreenWidth();
+    int screenH = RL.GetScreenHeight();
+    var hexesInRadius = World.GetHexesInRadius();
 
     // --- Draw Grid Lines ---
-    foreach (Hex hex in World.GetHexesInRadius())
+    foreach (Hex hex in hexesInRadius)
     {
-        if (World.Layout.IsInView(hex) && World.IsWithinBounds(hex))
+        if (World.Layout.IsInView(hex, screenW, screenH))
         {
             if (World.GetCellType(hex) == CellType.None)
             {
@@ -374,27 +383,19 @@ void Draw()
     }
 
     // --- Draw Cells ---
-    var allCells = World.GetAllCells().ToArray();
-    foreach (Cell cell in allCells)
+    foreach (Cell cell in World.GetAllCells())
     {
-        if (World.Layout.IsInView(cell.Position))
+        if (World.Layout.IsInView(cell.Position, screenW, screenH))
         {
-            var neighbors = new List<Cell>();
-            foreach (var n in allCells)
-            {
-                if (cell.Position.Distance(n.Position) <= 1)
-                {
-                    neighbors.Add(n);
-                }
-            }
+            var neighbors = World.GetNeighbors(cell.Position);
             cell.Draw(World.Layout, HexSize.X * 0.75f, neighbors);
         }
     }
 
     // --- 2. Draw Morphogens ---
-    foreach (var hex in World.GetHexesInRadius())
+    foreach (var hex in hexesInRadius)
     {
-        if (World.IsWithinBounds(hex) && World.Layout.IsInView(hex))
+        if (World.IsWithinBounds(hex) && World.Layout.IsInView(hex, screenW, screenH))
         {
             DrawMorphogen(hex);
         }
@@ -411,7 +412,7 @@ void Draw()
                 for (int r = Math.Max(-brushSize, -q - brushSize); r <= Math.Min(brushSize, -q + brushSize); r++)
                 {
                     var hex = HoveredHex + new Hex(q, r);
-                    if (World.Layout.IsInView(hex))
+                    if (World.Layout.IsInView(hex, screenW, screenH))
                     {
                         var previewColor = HoverOutlineColor;
                         previewColor.A = 100;
@@ -469,6 +470,7 @@ void Draw()
     // ---  Draw UI ---
     rlImGui.Begin();
     DrawInfoPanel(isHoverValid, 0.25f);
+    DrawMorphogenPanel(isHoverValid);
     DrawSimulationControls();
     rlImGui.End();
 }
@@ -704,6 +706,166 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
     
     ImGui.End();
     ImGui.PopStyleVar();
+}
+
+const float MorphogenPanelBottomMargin = 90f; // Space reserved for playback controls
+
+Vector2 ComputeGradientFromCache(Hex hex, string morphogen)
+{
+    float center = World.GetMorphogenStrength(hex, morphogen);
+    Vector2 grad = Vector2.Zero;
+    for (int i = 0; i < 6; i++)
+    {
+        Hex n = hex.Neighbor(i);
+        float s = World.GetMorphogenStrength(n, morphogen);
+        float diff = s - center;
+        float angle = (float)(i * Math.PI / 3);
+        grad += new Vector2((float)Math.Cos(angle), -(float)Math.Sin(angle)) * diff;
+    }
+    return grad != Vector2.Zero ? Vector2.Normalize(grad) : Vector2.Zero;
+}
+
+float ComputeGradientMagnitude(Hex hex, string morphogen)
+{
+    float center = World.GetMorphogenStrength(hex, morphogen);
+    float maxN = 0f, minN = 1f;
+    foreach (var n in hex.Neighbors())
+    {
+        float s = World.GetMorphogenStrength(n, morphogen);
+        if (s > maxN) maxN = s;
+        if (s < minN) minN = s;
+    }
+    return Math.Max(maxN - center, center - minN);
+}
+
+void DrawGradientArrow(Vector2 center, float r, Vector2 direction, float magnitude, Color morphogenColor, ImDrawListPtr drawList)
+{
+    if (direction == Vector2.Zero || magnitude < 0.001f) return;
+    float arrowLen = r * (0.3f + 0.7f * Math.Clamp(magnitude, 0f, 1f));
+    Vector2 tip = center + direction * arrowLen;
+    Vector2 perp = new(-direction.Y, direction.X);
+    float baseOffset = arrowLen * 0.4f;
+    float wing = arrowLen * 0.2f;
+    Vector2 base1 = center + direction * baseOffset - perp * wing;
+    Vector2 base2 = center + direction * baseOffset + perp * wing;
+    uint arrowCol = ImGui.ColorConvertFloat4ToU32(new Vector4(
+        morphogenColor.R / 255f, morphogenColor.G / 255f, morphogenColor.B / 255f, 0.9f));
+    drawList.AddTriangleFilled(tip, base1, base2, arrowCol);
+}
+
+void DrawUnifiedGradientCompass(Vector2 center, float size)
+{
+    var drawList = ImGui.GetWindowDrawList();
+    float r = size * 0.45f;
+    uint circleCol = ImGui.GetColorU32(ImGuiCol.Border);
+    uint fillCol = ImGui.GetColorU32(ImGuiCol.FrameBg);
+    drawList.AddCircleFilled(center, r, fillCol);
+    drawList.AddCircle(center, r, circleCol);
+
+    foreach (var morphogen in MorphogenManager.Morphogens)
+    {
+        Vector2 grad = ComputeGradientFromCache(HoveredHex, morphogen);
+        float mag = ComputeGradientMagnitude(HoveredHex, morphogen);
+        Color c = MorphogenColors.TryGetValue(morphogen, out var mc) ? mc : Color.White;
+        DrawGradientArrow(center, r, grad, mag, c, drawList);
+    }
+}
+
+void DrawMorphogenPanel(bool isHoverValid)
+{
+    float xAxisRatio = 0.22f;
+    xAxisRatio = Math.Clamp(xAxisRatio, 0.15f, 0.4f);
+
+    ImGuiViewportPtr viewport = ImGui.GetMainViewport();
+    Vector2 workPos = viewport.WorkPos;
+    Vector2 workSize = viewport.WorkSize;
+
+    float panelWidth = workSize.X * xAxisRatio;
+    float panelHeight = workSize.Y - MorphogenPanelBottomMargin; // Leave room for playback controls
+    Vector2 panelPos = new Vector2(workPos.X + workSize.X - panelWidth, workPos.Y);
+
+    ImGui.SetNextWindowPos(panelPos);
+    ImGui.SetNextWindowSize(new Vector2(panelWidth, panelHeight));
+    ImGui.SetNextWindowSizeConstraints(
+        new Vector2(180, 200),
+        new Vector2(workSize.X * 0.4f, panelHeight)
+    );
+
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 4.0f);
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(10, 8));
+    if (ImGui.Begin("Morphogen Sample", ImGuiWindowFlags.NoDocking | ImGuiWindowFlags.NoCollapse))
+    {
+        if (!isHoverValid)
+        {
+            ImGui.TextColored(new Vector4(0.55f, 0.55f, 0.55f, 1f), "Hover a hex to sample.");
+        }
+        else
+        {
+            ImGui.Text("Concentrations");
+            if (ImGui.BeginTable("Conc", 3, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg))
+            {
+                ImGui.TableSetupColumn("Morphogen", ImGuiTableColumnFlags.WidthFixed, 65);
+                ImGui.TableSetupColumn("Val", ImGuiTableColumnFlags.WidthFixed, 36);
+                ImGui.TableSetupColumn("Bar", ImGuiTableColumnFlags.WidthStretch);
+                ImGui.TableHeadersRow();
+
+                foreach (var morphogen in MorphogenManager.Morphogens)
+                {
+                    float strength = World.GetMorphogenStrength(HoveredHex, morphogen);
+                    ImGui.TableNextRow();
+                    ImGui.TableNextColumn();
+                    ImGui.Text(morphogen);
+                    ImGui.TableNextColumn();
+                    ImGui.Text($"{strength:F2}");
+                    ImGui.TableNextColumn();
+                    float barWidth = Math.Max(30, ImGui.GetContentRegionAvail().X - 4);
+                    Vector2 barStart = ImGui.GetCursorScreenPos();
+                    Vector2 barSize = new Vector2(barWidth * Math.Clamp(strength, 0f, 1f), 10);
+                    uint barColor = MorphogenColors.TryGetValue(morphogen, out var c)
+                        ? ImGui.ColorConvertFloat4ToU32(new Vector4(c.R / 255f, c.G / 255f, c.B / 255f, 0.8f))
+                        : ImGui.GetColorU32(ImGuiCol.PlotHistogram);
+                    ImGui.GetWindowDrawList().AddRectFilled(barStart, barStart + barSize, barColor);
+                    ImGui.GetWindowDrawList().AddRect(barStart, barStart + new Vector2(barWidth, 10), ImGui.GetColorU32(ImGuiCol.Border));
+                    ImGui.Dummy(new Vector2(barWidth, 10));
+                }
+                ImGui.EndTable();
+            }
+
+            ImGui.Spacing();
+            ImGui.Text("Gradients");
+            float compassSize = 72f;
+            Vector2 compassCenter = ImGui.GetCursorScreenPos() + new Vector2(compassSize / 2 + 8, compassSize / 2 + 8);
+            DrawUnifiedGradientCompass(compassCenter, compassSize);
+            ImGui.Dummy(new Vector2(compassSize + 16, compassSize + 16));
+
+            ImGui.Text("Legend");
+            foreach (var morphogen in MorphogenManager.Morphogens)
+            {
+                ImGui.SameLine(0, 8);
+                if (MorphogenColors.TryGetValue(morphogen, out var mc))
+                {
+                    ImGui.ColorButton($"##{morphogen}", new Vector4(mc.R / 255f, mc.G / 255f, mc.B / 255f, 1f), ImGuiColorEditFlags.NoTooltip, new Vector2(12, 12));
+                }
+                ImGui.SameLine();
+                ImGui.Text(morphogen);
+            }
+
+            ImGui.Spacing();
+            ImGui.Text("Neighbors");
+            int d = 0;
+            foreach (var n in HoveredHex.Neighbors())
+            {
+                var parts = MorphogenManager.Morphogens
+                    .Select(m => (m, World.GetMorphogenStrength(n, m)))
+                    .Where(x => x.Item2 > 0.001f)
+                    .Select(x => $"{x.Item1}:{x.Item2:F1}").ToList();
+                ImGui.Text($"  Dir {d}: {(parts.Count > 0 ? string.Join(" ", parts) : "—")}");
+                d++;
+            }
+        }
+    }
+    ImGui.End();
+    ImGui.PopStyleVar(2);
 }
 
 void DrawSimulationControls()

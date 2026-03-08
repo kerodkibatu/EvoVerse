@@ -88,6 +88,28 @@ namespace EvoVerse
                 }
             }
         }
+
+        /// <summary>
+        /// Fills a buffer with hexes in range. Reuse the buffer across calls to avoid allocations.
+        /// </summary>
+        public static void GetHexesInRange(Hex hex, int range, List<Hex> buffer)
+        {
+            buffer.Clear();
+            if (range == 0)
+            {
+                buffer.Add(hex);
+                return;
+            }
+            for (int q = -range; q <= range; q++)
+            {
+                int r1 = Math.Max(-range, -q - range);
+                int r2 = Math.Min(range, -q + range);
+                for (int r = r1; r <= r2; r++)
+                {
+                    buffer.Add(new Hex(q, r) + hex);
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -147,6 +169,13 @@ namespace EvoVerse
             Vector2 pixel = HexToPixel(h);
             return pixel.X >= -Size.X && pixel.X <= Raylib.GetScreenWidth() + Size.X &&
                    pixel.Y >= -Size.Y && pixel.Y <= Raylib.GetScreenHeight() + Size.Y;
+        }
+
+        public bool IsInView(Hex h, int screenW, int screenH)
+        {
+            Vector2 pixel = HexToPixel(h);
+            return pixel.X >= -Size.X && pixel.X <= screenW + Size.X &&
+                   pixel.Y >= -Size.Y && pixel.Y <= screenH + Size.Y;
         }
 
         /// <summary>

@@ -1,10 +1,29 @@
-M0 => [M0] [Ms n(0)]
-M1 => [M1]
-M2 => [M2] [tmSkDiv]
-M6 => [Ms M0]7
-M7 => [Ms M2 !M6]1 [Ms !M0 M6 M7]1
-M9 => [Mfl n(<6)]1
-tmSkDiv => [Ms]1
-NODIV => [Ms !M0 !M6] [Msk !M9] [Mfl !M6]
-SKIN => [Ms !M6 M2]
-FLESH => [Ms !M0 M6 M7 n(6)]
+// Planaria-like organism — Part 1 video genome.
+// Morphogen map: M0=seed, M1=activation, M6=boundary, M7=diff wave, M8=germline,
+//   M9=skin repair, M10=flesh proximity, MGI=germline inhibitor
+
+@boundaryStem = [is(STEM) M1 M6(<0.2)]
+@boundaryStemNoMGI = [is(STEM) M1 M6(<0.2) !MGI]
+
+// Trigger
+tmSeed => [n(0)]1
+M0     => [M0] [tmSeed]
+
+// Morphogens
+M1  => [M6]1 [M1]1
+M6  => [is(STEM) M0]7 [is(STEM) M8]3
+M7  => @boundaryStem 2 [is(STEM) !M0 M6 M7]1
+M8  => @boundaryStemNoMGI 0 [is(STEM) M8]0
+MGI => [is(STEM) M8]7
+M9  => [is(FLESH) n(<6)]1
+M10 => [is(FLESH)]1
+
+// Division control
+NODIV => [!is(SKIN) !M8 M1 M6(<0.2) MGI] [is(STEM) M8 !M9] [is(SKIN) !M9] [is(FLESH) !M6]
+
+// Specialization
+SKIN  => [is(STEM) M1 M6(<0.2) n(>2) t(>2) !M8]
+FLESH => [is(STEM) !M0 !M8 M6(>0.15) M7 n(6)]
+
+// Apoptosis
+APOP => [is(SKIN) !M10 !M8]5 [is(FLESH) !M6]2 [is(SKIN) n(=6)]10

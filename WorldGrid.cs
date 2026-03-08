@@ -26,21 +26,23 @@ public class WorldGrid
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool IsWithinBounds(Hex hex) => hex.Length() <= MapRadius;
+    public bool IsWithinBounds(Hex hex) => hex.Q * hex.Q + hex.Q * hex.R + hex.R * hex.R <= MapRadius * MapRadius;
 
     public void UpdateLayout(HexLayout newLayout) => Layout = newLayout;
 
     public void Update()
-    {        
+    {
+        MorphogenManager.Update(); // Clear morphogens before this step's emissions
         // Save current state before updating
         SaveCurrentState();
         
         var cellsToRemove = new List<Hex>(_cells.Count / 10); // Estimate 10% might die
         var cellsToDivide = new List<Hex>(_cells.Count); // Estimate all might divide
         List<(string,Hex,int)> emittedMarkers = [];
-        for (int i = _cells.Count - 1; i >= 0; i--)
+        var snapshot = _cells.ToArray();
+        for (int i = snapshot.Length - 1; i >= 0; i--)
         {
-            var kvp = _cells.ElementAt(i);
+            var kvp = snapshot[i];
             emittedMarkers.AddRange(kvp.Value.Update(this));
             if (kvp.Value.IsDead)
                 cellsToRemove.Add(kvp.Key);
@@ -189,17 +191,33 @@ public class WorldGrid
     public IEnumerable<Cell> GetAllCells() => _cells.Values;
     public IEnumerable<Hex> GetAllOccupiedHexes() => _cells.Keys;
 
+    public List<Cell> GetNeighbors(Hex hex)
+    {
+        var list = new List<Cell>(6);
+        for (int i = 0; i < 6; i++)
+        {
+            var c = GetCell(hex.Neighbor(i));
+            if (c != null) list.Add(c);
+        }
+        return list;
+    }
+
     public IEnumerable<Hex> GetHexesInRadius()
     {
         if (_cachedHexesInRadius == null || _cachedRadius != MapRadius)
         {
+            int radiusSq = MapRadius * MapRadius;
             _cachedHexesInRadius = new List<Hex>();
             for (int q = -MapRadius; q <= MapRadius; q++)
             {
                 int r1 = Math.Max(-MapRadius, -q - MapRadius);
                 int r2 = Math.Min(MapRadius, -q + MapRadius);
                 for (int r = r1; r <= r2; r++)
-                    _cachedHexesInRadius.Add(new Hex(q, r));
+                {
+                    var h = new Hex(q, r);
+                    if (h.Q * h.Q + h.Q * h.R + h.R * h.R <= radiusSq)
+                        _cachedHexesInRadius.Add(h);
+                }
             }
             _cachedRadius = MapRadius;
         }
@@ -244,7 +262,6 @@ public class WorldGrid
                 _morphogenCache[hex] = hexStates;
             }
         }
-        MorphogenManager.Update();
     }
 
     // Add method to get morphogen strength from cache

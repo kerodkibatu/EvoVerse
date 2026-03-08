@@ -215,10 +215,15 @@ public abstract class Cell
         for (int i = Timers.Count - 1; i >= 0; i--)
         {
             var (marker, time) = Timers[i];
-            if (time == Clock)
+            int remaining = time - 1;
+            if (remaining <= 0)
             {
                 emittedMarkers.Add((marker, Position, 0));
                 Timers.RemoveAt(i);
+            }
+            else
+            {
+                Timers[i] = (marker, remaining);
             }
         }
         return emittedMarkers;
@@ -242,28 +247,29 @@ public abstract class Cell
                     case GeneFunction.StartTimer:
                         if (!Timers.Any(t => t.marker == gene.OutputMarker))
                         {
-                            Timers.Add((gene.OutputMarker, Clock + activeCondition.Range));
+                            Timers.Add((gene.OutputMarker, activeCondition.Range));
                         }
                         break;
                     case GeneFunction.Apoptosis:
-                        Die(1);
+                        float prob;
+                        if (activeCondition.ProbabilityMorphogen != null)
+                            prob = 1.0f - grid.GetMorphogenStrength(Position, activeCondition.ProbabilityMorphogen);
+                        else
+                            prob = activeCondition.Range > 0 ? 1.0f / activeCondition.Range : 1.0f;
+                        Die(prob);
                         break;
                     case GeneFunction.NoDivision:
                         ShouldDivide = false;
                         break;
                     case GeneFunction.Specialization:
-                        if (Type == CellType.Stem)
+                        CellType? targetType = gene.OutputMarker switch
                         {
-                            switch (gene.OutputMarker)
-                            {
-                                case "SKIN":
-                                    grid.PlaceCell(Position, CellType.Skin, Genome);
-                                    break;
-                                case "FLESH":
-                                    grid.PlaceCell(Position, CellType.Flesh, Genome);
-                                    break;
-                            }
-                        }
+                            "SKIN" when Type == CellType.Stem => CellType.Skin,
+                            "FLESH" when Type == CellType.Stem => CellType.Flesh,
+                            _ => null
+                        };
+                        if (targetType.HasValue)
+                            grid.PlaceCell(Position, targetType.Value, Genome);
                         break;
                     case GeneFunction.Movement:
                         // Direction is determined by the condition
@@ -464,20 +470,7 @@ public class StemCell : BasicCell
     protected override float MembraneThickness => 5.0f;
 
     public override CellType Type => CellType.Stem;
-    static StemCell()
-    {
-        MorphogenManager.RegisterMorphogen("Ms");
-    }
-    public StemCell(Hex position, Genome? genome = null) : base(position, genome)
-    {
-        MorphogenManager.Emit("Ms", Position, 0);
-    }
-    override public List<(string,Hex,int)> Update(WorldGrid grid)
-    {
-        var emittedMarkers = base.Update(grid);
-        emittedMarkers.Add(("Ms", Position, 0));
-        return emittedMarkers;
-    }
+    public StemCell(Hex position, Genome? genome = null) : base(position, genome) { }
 }
 
 public class FleshCell : BasicCell
@@ -488,21 +481,8 @@ public class FleshCell : BasicCell
     protected override Color MembraneColor => new(240, 120, 90, 150); // Soft orange
     protected override float NucleusRadiusRatio => 0.14f;
     protected override float MembraneThickness => 3.0f;
-    static FleshCell()
-    {
-        MorphogenManager.RegisterMorphogen("Mfl");
-    }
-    public FleshCell(Hex position, Genome? genome = null) : base(position, genome)
-    {
-        MorphogenManager.Emit("Mfl", Position, 0);
-    }
+    public FleshCell(Hex position, Genome? genome = null) : base(position, genome) { }
     public override CellType Type => CellType.Flesh;
-    override public List<(string,Hex,int)> Update(WorldGrid grid)
-    {
-        var emittedMarkers = base.Update(grid);
-        emittedMarkers.Add(("Mfl", Position, 0));
-        return emittedMarkers;
-    }
 }
 
 public class SkinCell : BasicCell
@@ -515,18 +495,5 @@ public class SkinCell : BasicCell
     protected override float MembraneThickness => 4.0f;
 
     public override CellType Type => CellType.Skin;
-    static SkinCell()
-    {
-        MorphogenManager.RegisterMorphogen("Msk");
-    }
-    public SkinCell(Hex position, Genome? genome = null) : base(position, genome)
-    {
-        MorphogenManager.Emit("Msk", Position, 0);
-    }
-    override public List<(string,Hex,int)> Update(WorldGrid grid)
-    {
-        var emittedMarkers = base.Update(grid);
-        emittedMarkers.Add(("Msk", Position, 0));
-        return emittedMarkers;
-    }
+    public SkinCell(Hex position, Genome? genome = null) : base(position, genome) { }
 }
