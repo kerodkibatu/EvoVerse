@@ -63,15 +63,6 @@ TYPE BONE:
   membrane: #FFFFF0C8, 6.0
 ```
 
-Decimal format is also supported:
-
-```
-TYPE FLESH:
-  color: 220, 80, 60, 150
-  nucleus: 160, 40, 30, 150, 0.14
-  membrane: 240, 120, 90, 150, 3.0
-```
-
 ### Syntax
 
 ```
@@ -85,11 +76,11 @@ The header line is `TYPE NAME:` (colon required). Property lines must be indente
 
 | Property | Format | Defaults | Description |
 |---|---|---|---|
-| **color** | `#RRGGBB[AA]` or `r, g, b [, a]` | a=150 | Main cell fill color |
-| **nucleus** | `#RRGGBB[AA] [, radius_ratio]` or `r, g, b [, a] [, ratio]` | a=150, ratio=0.2 | Nucleus color and size (0.0-1.0 of cell radius) |
-| **membrane** | `#RRGGBB[AA] [, thickness]` or `r, g, b [, a] [, thickness]` | a=150, thickness=3.0 | Membrane outline color and pixel thickness |
+| **color** | `#RRGGBB[AA]` | a=150 | Main cell fill color |
+| **nucleus** | `#RRGGBB[AA] [, radius_ratio]` | a=150, ratio=0.2 | Nucleus color and size (0.0-1.0 of cell radius) |
+| **membrane** | `#RRGGBB[AA] [, thickness]` | a=150, thickness=3.0 | Membrane outline color and pixel thickness |
 
-Colors accept either `#RRGGBB` / `#RRGGBBAA` hex format or comma-separated decimal `r, g, b [, a]` (0-255). Only `color` is required. Nucleus and membrane inherit sensible defaults if omitted.
+Colors use `#RRGGBB` or `#RRGGBBAA` hex format. Alpha defaults to 150 (semi-transparent) if omitted. Only `color` is required. Nucleus and membrane inherit sensible defaults if omitted.
 
 Types must be defined before any gene expression that references them (as specialization target, `is()`, or `ns()`). `STEM` cannot be redefined.
 
