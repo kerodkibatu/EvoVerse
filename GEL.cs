@@ -468,6 +468,9 @@ public static class GEL_Parser
         foreach (var (key, value) in props)
         {
             var args = value.Split(',').Select(s => s.Trim()).ToArray();
+            bool isHex = args[0].StartsWith('#');
+            // After the color, extra args start at index 1 (hex) or 4 (decimal rgba)
+            int extraStart = isHex ? 1 : 4;
 
             switch (key.ToLowerInvariant())
             {
@@ -476,12 +479,12 @@ public static class GEL_Parser
                     break;
                 case "nucleus":
                     def.NucleusColor = ParseColor(args, "nucleus");
-                    if (args.Length >= 5 && float.TryParse(args[4], CultureInfo.InvariantCulture, out var ratio))
+                    if (args.Length > extraStart && float.TryParse(args[extraStart], CultureInfo.InvariantCulture, out var ratio))
                         def.NucleusRadiusRatio = ratio;
                     break;
                 case "membrane":
                     def.MembraneColor = ParseColor(args, "membrane");
-                    if (args.Length >= 5 && float.TryParse(args[4], CultureInfo.InvariantCulture, out var thickness))
+                    if (args.Length > extraStart && float.TryParse(args[extraStart], CultureInfo.InvariantCulture, out var thickness))
                         def.MembraneThickness = thickness;
                     break;
                 default:
@@ -492,19 +495,45 @@ public static class GEL_Parser
         CellTypeRegistry.Register(def);
     }
 
+    /// <summary>
+    /// Parse a color from either hex (#RRGGBB or #RRGGBBAA) or decimal (r, g, b[, a]) format.
+    /// </summary>
     private static Raylib_cs.Color ParseColor(string[] args, string propName)
     {
+        var first = args[0].Trim();
+
+        // Hex format: #RRGGBB or #RRGGBBAA
+        if (first.StartsWith('#'))
+        {
+            var hex = first[1..];
+            if (hex.Length != 6 && hex.Length != 8)
+                throw new GELParseException($"TYPE {propName}: hex color must be #RRGGBB or #RRGGBBAA. Got '{first}'");
+            try
+            {
+                byte r = Convert.ToByte(hex[0..2], 16);
+                byte g = Convert.ToByte(hex[2..4], 16);
+                byte b = Convert.ToByte(hex[4..6], 16);
+                byte a = hex.Length == 8 ? Convert.ToByte(hex[6..8], 16) : (byte)150;
+                return new Raylib_cs.Color(r, g, b, a);
+            }
+            catch (FormatException)
+            {
+                throw new GELParseException($"TYPE {propName}: invalid hex color '{first}'");
+            }
+        }
+
+        // Decimal format: r, g, b[, a]
         if (args.Length < 3)
-            throw new GELParseException($"TYPE {propName}() requires at least 3 values (r,g,b). Got {args.Length}");
+            throw new GELParseException($"TYPE {propName} requires at least 3 values (r,g,b) or a hex color (#RRGGBB). Got {args.Length}");
 
-        if (!byte.TryParse(args[0], out var r) || !byte.TryParse(args[1], out var g) || !byte.TryParse(args[2], out var b))
-            throw new GELParseException($"Invalid color values in {propName}(). Expected integers 0-255");
+        if (!byte.TryParse(args[0], out var dr) || !byte.TryParse(args[1], out var dg) || !byte.TryParse(args[2], out var db))
+            throw new GELParseException($"Invalid color values in {propName}. Expected integers 0-255 or hex #RRGGBB");
 
-        byte a = 150; // default alpha
+        byte da = 150;
         if (args.Length >= 4 && byte.TryParse(args[3], out var alpha))
-            a = alpha;
+            da = alpha;
 
-        return new Raylib_cs.Color(r, g, b, a);
+        return new Raylib_cs.Color(dr, dg, db, da);
     }
 
     public static Gene ParseGeneExpression(string expression)

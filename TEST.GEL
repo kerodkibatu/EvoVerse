@@ -4,14 +4,14 @@
 
 // ── Type definitions (STEM is built-in) ──────────────────────────────────────
 TYPE FLESH:
-  color: 220, 80, 60, 150
-  nucleus: 160, 40, 30, 150, 0.14
-  membrane: 240, 120, 90, 150, 3.0
+  color: #DC503C96
+  nucleus: #A0281E96, 0.14
+  membrane: #F0785A96, 3.0
 
 TYPE SKIN:
-  color: 0, 100, 0, 150
-  nucleus: 0, 80, 0, 150, 0.2
-  membrane: 0, 120, 0, 150, 4.0
+  color: #00640096
+  nucleus: #00500096, 0.2
+  membrane: #00780096, 4.0
 
 // ── Variables ────────────────────────────────────────────────────────────────
 @boundaryStem = [is(STEM) M1 M6(<0.2)]
