@@ -23,7 +23,7 @@ public class SimulationHistoryState
         foreach (var kvp in Cells)
         {
             // Create a new cell of the same type with the same genome
-            var newCell = Cell.CreateCell(kvp.Value.Type, kvp.Key, kvp.Value.Genome);
+            var newCell = new Cell(kvp.Value.Type, kvp.Key, kvp.Value.Genome);
             if (newCell != null)
             {
                 // Copy internal state

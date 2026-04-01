@@ -66,18 +66,11 @@ public struct MarkerCondition
 
 public class Gene
 {
-    // List of condition sets (each set represents a bracketed condition)
     public List<ConditionSet> ConditionSets { get; set; } = [];
-
-    // Function or phenotype this gene affects
     public GeneFunction Function { get; set; } = GeneFunction.Morphology;
-
-    // For output marker release
     public string OutputMarker { get; set; } = "NODIV";
 
-    public Gene()
-    {
-    }
+    public Gene() { }
 
     public Gene(string outputMarker)
     {
@@ -89,67 +82,46 @@ public class Gene
         foreach (var conditionSet in ConditionSets)
         {
             if (conditionSet.Evaluate(grid, cell))
-            {
                 yield return conditionSet;
-            }
         }
     }
 
     public override string ToString()
     {
         var conditionSetsStr = string.Join(" ", ConditionSets.Select(cs => cs.ToString()));
-
         return $"{OutputMarker} => {conditionSetsStr}";
     }
 }
 
 public class ConditionSet
 {
-    // List of active markers (with optional thresholds)
     public List<MarkerCondition> ActiveMarkers { get; set; } = [];
-
-    // List of inhibited markers (with optional thresholds)
     public List<MarkerCondition> InhibitedMarkers { get; set; } = [];
-
-    // Environmental conditions
     public Dictionary<int, ComparisonType> NeighborConditions { get; set; } = [];
-
-    // Clock/age conditions
     public Dictionary<int, ComparisonType> ClockConditions { get; set; } = [];
-
-    // Range or timer value
     public int Range { get; set; } = 0;
 
-    // Self-type conditions (checked directly against cell.Type)
-    public List<CellType> SelfTypeChecks { get; set; } = [];
-    public List<CellType> InhibitedSelfTypes { get; set; } = [];
+    // Self-type conditions (string-based, case-insensitive)
+    public List<string> SelfTypeChecks { get; set; } = [];
+    public List<string> InhibitedSelfTypes { get; set; } = [];
 
-    // Typed neighbor count conditions — ns(SKIN>=2) etc.
-    public List<(CellType CellType, int Count, ComparisonType Comparison)> TypedNeighborConditions { get; set; } = [];
+    // Typed neighbor count conditions
+    public List<(string CellType, int Count, ComparisonType Comparison)> TypedNeighborConditions { get; set; } = [];
 
-    // Target marker for movement genes (what to move toward or away from)
     public string? MovementTarget { get; set; }
-
-    // Whether movement is away from the target (true) or towards it (false)
     public bool IsMovementAway { get; set; } = false;
-
-    // Probability morphogen for APOP: Die(1 - concentration). Null = use Range-based probability.
     public string? ProbabilityMorphogen { get; set; }
 
     public void AddMarker(MarkerCondition marker)
     {
         if (!ActiveMarkers.Any(m => m.MarkerName == marker.MarkerName))
-        {
             ActiveMarkers.Add(marker);
-        }
     }
 
     public void AddInhibitor(MarkerCondition marker)
     {
         if (!InhibitedMarkers.Any(m => m.MarkerName == marker.MarkerName))
-        {
             InhibitedMarkers.Add(marker);
-        }
     }
 
     public void AddNeighborCondition(int count, ComparisonType comparison = ComparisonType.Equals)
@@ -179,21 +151,18 @@ public class ConditionSet
 
     public bool Evaluate(WorldGrid grid, Cell cell)
     {
-        // Check self-type conditions
+        // Check self-type conditions (string comparison, case-insensitive)
         foreach (var t in SelfTypeChecks)
-            if (cell.Type != t) return false;
+            if (!string.Equals(cell.Type, t, StringComparison.OrdinalIgnoreCase)) return false;
         foreach (var t in InhibitedSelfTypes)
-            if (cell.Type == t) return false;
+            if (string.Equals(cell.Type, t, StringComparison.OrdinalIgnoreCase)) return false;
 
-        // Batch morphogen lookups when marker conditions exist
+        // Batch morphogen lookups
         Dictionary<string, float>? morphogens = null;
         if (ActiveMarkers.Count > 0 || InhibitedMarkers.Count > 0)
-        {
             morphogens = grid.GetMorphogensAtHex(cell.Position);
-        }
         float GetStrength(string name) => morphogens?.TryGetValue(name, out var s) == true ? s : 0f;
 
-        // Check active markers (with optional thresholds)
         foreach (var mc in ActiveMarkers)
         {
             var strength = GetStrength(mc.MarkerName);
@@ -204,11 +173,9 @@ public class ConditionSet
             }
             else
             {
-                if (strength == 0)
-                    return false;
+                if (strength == 0) return false;
             }
         }
-        // Check inhibited markers (with optional thresholds)
         foreach (var mc in InhibitedMarkers)
         {
             var strength = GetStrength(mc.MarkerName);
@@ -219,11 +186,11 @@ public class ConditionSet
             }
             else
             {
-                if (strength > 0)
-                    return false;
+                if (strength > 0) return false;
             }
         }
-        // Check clock/age conditions
+
+        // Clock conditions
         foreach (var condition in ClockConditions)
         {
             var cellClock = cell.Clock;
@@ -240,14 +207,15 @@ public class ConditionSet
             };
             if (!met) return false;
         }
-        // Check typed neighbor count conditions (ns)
+
+        // Typed neighbor count conditions (string-based)
         foreach (var (cellType, count, comparison) in TypedNeighborConditions)
         {
             int typedCount = 0;
             for (int i = 0; i < 6; i++)
             {
                 var neighborCell = grid.GetCell(cell.Position.Neighbor(i));
-                if (neighborCell?.Type == cellType)
+                if (neighborCell != null && string.Equals(neighborCell.Type, cellType, StringComparison.OrdinalIgnoreCase))
                     typedCount++;
             }
             bool met = comparison switch
@@ -263,47 +231,31 @@ public class ConditionSet
             if (!met) return false;
         }
 
-        // Compute occupied neighbor count once (used by all NeighborConditions)
+        // Neighbor count conditions
         int occupiedNeighborCount = NeighborConditions.Count > 0
             ? 6 - cell.GetEmptyNeighborHexes(grid).Count
             : 0;
 
-        bool neighborConditionMet = true; // Assume true until proven otherwise
         foreach (var condition in NeighborConditions)
         {
             var A = occupiedNeighborCount;
             var B = condition.Key;
-            switch (condition.Value)
+            bool met = condition.Value switch
             {
-                case ComparisonType.Equals:
-                    if (A != B) neighborConditionMet = false;
-                    break;
-                case ComparisonType.NotEquals:
-                    if (A == B) neighborConditionMet = false;
-                    break;
-                case ComparisonType.GreaterThan:
-                    if (A <= B) neighborConditionMet = false;
-                    break;
-                case ComparisonType.LessThan:
-                    if (A >= B) neighborConditionMet = false;
-                    break;
-                case ComparisonType.GreaterThanOrEqual:
-                    if (A < B) neighborConditionMet = false;
-                    break;
-                case ComparisonType.LessThanOrEqual:
-                    if (A > B) neighborConditionMet = false;
-                    break;
-                default:
-                    neighborConditionMet = false;
-                    break;
-            }
-            // If any condition fails, we can exit early
-            if (!neighborConditionMet) break;
+                ComparisonType.Equals => A == B,
+                ComparisonType.NotEquals => A != B,
+                ComparisonType.GreaterThan => A > B,
+                ComparisonType.LessThan => A < B,
+                ComparisonType.GreaterThanOrEqual => A >= B,
+                ComparisonType.LessThanOrEqual => A <= B,
+                _ => false
+            };
+            if (!met) return false;
         }
-        return neighborConditionMet;
+        return true;
     }
 
-    public string ComparisonToString(ComparisonType comparison)
+    public static string ComparisonToString(ComparisonType comparison)
     {
         return comparison switch
         {
@@ -320,12 +272,12 @@ public class ConditionSet
     public override string ToString()
     {
         var parts = new List<string>();
-        parts.AddRange(SelfTypeChecks.Select(t => $"is({t.ToString().ToUpperInvariant()})"));
-        parts.AddRange(InhibitedSelfTypes.Select(t => $"!is({t.ToString().ToUpperInvariant()})"));
+        parts.AddRange(SelfTypeChecks.Select(t => $"is({t})"));
+        parts.AddRange(InhibitedSelfTypes.Select(t => $"!is({t})"));
         parts.AddRange(ActiveMarkers.Select(m => m.ToString()));
         parts.AddRange(InhibitedMarkers.Select(m => "!" + m.ToString()));
         parts.AddRange(TypedNeighborConditions.Select(tc =>
-            $"ns({tc.CellType.ToString().ToUpperInvariant()}{ComparisonToString(tc.Comparison)}{tc.Count})"));
+            $"ns({tc.CellType}{ComparisonToString(tc.Comparison)}{tc.Count})"));
         var markers = string.Join(" ", parts);
 
         var neighborStr = "";
@@ -346,9 +298,7 @@ public class ConditionSet
         var probStr = ProbabilityMorphogen != null ? $"({ProbabilityMorphogen})" : "";
 
         if (MovementTarget != null)
-        {
             return $"[{markers}{neighborStr}{clockStr}]{rangeStr}{(IsMovementAway ? "<" : ">")}{MovementTarget}";
-        }
 
         return $"[{markers}{neighborStr}{clockStr}]{rangeStr}{probStr}";
     }
@@ -369,15 +319,15 @@ public class GELParseException : Exception
 
 public static class GEL_Parser
 {
-    private static readonly HashSet<string> FunctionMarkers = ["APOP", "NODIV", "SKIN", "FLESH", "MOVE"];
-    private static readonly HashSet<string> SpecializationMarkers = ["SKIN", "FLESH"];
+    private static readonly HashSet<string> FunctionMarkers = ["APOP", "NODIV", "MOVE"];
 
     public static Genome ParseGEL(string gel)
     {
         if (string.IsNullOrWhiteSpace(gel))
-        {
             throw new GELParseException("GEL string cannot be empty");
-        }
+
+        // Reset type registry before parsing (keeps STEM builtin)
+        CellTypeRegistry.Reset();
 
         var expressions = PreprocessVariables(gel);
         return ParseGenome(expressions);
@@ -391,7 +341,6 @@ public static class GEL_Parser
 
         foreach (var rawLine in lines)
         {
-            // Strip // comments
             var line = rawLine;
             var commentIndex = line.IndexOf("//");
             if (commentIndex >= 0)
@@ -400,7 +349,7 @@ public static class GEL_Parser
             line = line.Trim();
             if (string.IsNullOrEmpty(line)) continue;
 
-            // Check for variable definition: @name = value
+            // Variable definition: @name = value
             var varMatch = Regex.Match(line, @"^@(\w+)\s*=\s*(.+)$");
             if (varMatch.Success)
             {
@@ -428,46 +377,126 @@ public static class GEL_Parser
     public static Genome ParseGenome(string[] expressions)
     {
         var genome = new Genome();
+        // Collected specialization targets to validate after parsing
+        var specializationTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var expression in expressions)
         {
             try
             {
-                var gene = ParseGeneExpression(expression.Trim());
+                var trimmed = expression.Trim();
+
+                // TYPE declaration: TYPE NAME color(r,g,b,a) nucleus(r,g,b,a,ratio) membrane(r,g,b,a,thickness)
+                if (trimmed.StartsWith("TYPE ", StringComparison.OrdinalIgnoreCase))
+                {
+                    ParseTypeDeclaration(trimmed);
+                    continue;
+                }
+
+                var gene = ParseGeneExpression(trimmed);
                 genome.Add(gene);
 
-                // Register non-function markers
-                if (!FunctionMarkers.Contains(gene.OutputMarker))
-                {
+                // Track specialization targets
+                if (gene.Function == GeneFunction.Specialization)
+                    specializationTargets.Add(gene.OutputMarker);
+
+                // Register non-function morphogens
+                if (gene.Function == GeneFunction.Morphology)
                     MorphogenManager.RegisterMorphogen(gene.OutputMarker);
-                }
             }
             catch (GELParseException ex)
             {
                 throw new GELParseException($"Error in expression '{expression}': {ex.Message}");
             }
         }
+
+        // Validate all specialization targets have TYPE definitions
+        foreach (var target in specializationTargets)
+        {
+            if (!CellTypeRegistry.Exists(target))
+                throw new GELParseException($"Specialization target '{target}' has no TYPE definition. Add: TYPE {target} color(r,g,b,a)");
+        }
+
         return genome;
+    }
+
+    /// <summary>
+    /// Parse a TYPE declaration line and register it in the CellTypeRegistry.
+    /// Syntax: TYPE NAME color(r,g,b[,a]) [nucleus(r,g,b[,a][,ratio])] [membrane(r,g,b[,a][,thickness])]
+    /// </summary>
+    private static void ParseTypeDeclaration(string line)
+    {
+        // Extract the type name (first word after TYPE)
+        var match = Regex.Match(line, @"^TYPE\s+(\w+)\s*(.*)", RegexOptions.IgnoreCase);
+        if (!match.Success)
+            throw new GELParseException("Invalid TYPE syntax. Expected: TYPE NAME color(r,g,b[,a])");
+
+        var name = match.Groups[1].Value.ToUpperInvariant();
+        var propsStr = match.Groups[2].Value.Trim();
+
+        if (name == CellTypeRegistry.Stem)
+            throw new GELParseException("Cannot redefine STEM. It is a built-in type.");
+
+        var def = new CellTypeDefinition { Name = name };
+
+        // Parse property blocks: color(...), nucleus(...), membrane(...)
+        var propMatches = Regex.Matches(propsStr, @"(\w+)\(([^)]+)\)");
+        foreach (Match pm in propMatches)
+        {
+            var propName = pm.Groups[1].Value.ToLowerInvariant();
+            var args = pm.Groups[2].Value.Split(',').Select(s => s.Trim()).ToArray();
+
+            switch (propName)
+            {
+                case "color":
+                    def.MainColor = ParseColor(args, "color");
+                    break;
+                case "nucleus":
+                    def.NucleusColor = ParseColor(args, "nucleus");
+                    if (args.Length >= 5 && float.TryParse(args[4], CultureInfo.InvariantCulture, out var ratio))
+                        def.NucleusRadiusRatio = ratio;
+                    break;
+                case "membrane":
+                    def.MembraneColor = ParseColor(args, "membrane");
+                    if (args.Length >= 5 && float.TryParse(args[4], CultureInfo.InvariantCulture, out var thickness))
+                        def.MembraneThickness = thickness;
+                    break;
+                default:
+                    throw new GELParseException($"Unknown TYPE property: '{propName}'. Valid: color, nucleus, membrane");
+            }
+        }
+
+        CellTypeRegistry.Register(def);
+    }
+
+    private static Raylib_cs.Color ParseColor(string[] args, string propName)
+    {
+        if (args.Length < 3)
+            throw new GELParseException($"TYPE {propName}() requires at least 3 values (r,g,b). Got {args.Length}");
+
+        if (!byte.TryParse(args[0], out var r) || !byte.TryParse(args[1], out var g) || !byte.TryParse(args[2], out var b))
+            throw new GELParseException($"Invalid color values in {propName}(). Expected integers 0-255");
+
+        byte a = 150; // default alpha
+        if (args.Length >= 4 && byte.TryParse(args[3], out var alpha))
+            a = alpha;
+
+        return new Raylib_cs.Color(r, g, b, a);
     }
 
     public static Gene ParseGeneExpression(string expression)
     {
         if (string.IsNullOrWhiteSpace(expression))
-        {
             throw new GELParseException("Expression cannot be empty");
-        }
 
         var gene = new Gene();
 
         if (!expression.Contains("=>"))
-        {
             throw new GELParseException("Expression must contain an output marker and conditions separated by '=>'");
-        }
 
         var parts = expression.Split(["=>"], StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length != 2)
-        {
             throw new GELParseException("Invalid expression format. Expected 'output => conditions'");
-        }
 
         var outputMarker = parts[0].Trim();
         var rightPart = parts[1].Trim();
@@ -475,40 +504,48 @@ public static class GEL_Parser
         ValidateOutputMarker(outputMarker);
         gene.OutputMarker = outputMarker;
 
-        // Map gene function based on output marker
+        // Determine gene function.
+        // If the output marker is a registered (or soon-to-be) cell type and not a function marker,
+        // treat it as specialization. This allows GEL-defined types to be specialization targets.
         gene.Function = outputMarker switch
         {
             "APOP" => GeneFunction.Apoptosis,
             "NODIV" => GeneFunction.NoDivision,
             "MOVE" => GeneFunction.Movement,
             _ when outputMarker.StartsWith("tm") => GeneFunction.StartTimer,
-            _ when SpecializationMarkers.Contains(outputMarker) => GeneFunction.Specialization,
+            _ when IsSpecializationMarker(outputMarker) => GeneFunction.Specialization,
             _ => GeneFunction.Morphology
         };
 
-        // Only parse conditions if there are any
         if (!string.IsNullOrWhiteSpace(rightPart))
-        {
             ParseConditions(rightPart, gene);
-        }
 
         return gene;
+    }
+
+    /// <summary>
+    /// A marker is a specialization marker if it's a registered cell type (other than STEM)
+    /// or if it matches the pattern of a TYPE that will be defined (uppercase, not a morphogen pattern).
+    /// We check registry first; during parsing, types are defined before gene expressions.
+    /// </summary>
+    private static bool IsSpecializationMarker(string marker)
+    {
+        if (FunctionMarkers.Contains(marker)) return false;
+        if (marker.StartsWith("tm")) return false;
+        // If it's registered as a cell type, it's a specialization target
+        return CellTypeRegistry.Exists(marker);
     }
 
     private static void ValidateOutputMarker(string marker)
     {
         if (string.IsNullOrWhiteSpace(marker))
-        {
             throw new GELParseException("Output marker cannot be empty");
-        }
     }
 
     private static void ValidateMarker(string marker)
     {
         if (string.IsNullOrWhiteSpace(marker))
-        {
             throw new GELParseException("Marker cannot be empty");
-        }
     }
 
     private static ComparisonType ParseComparison(string compStr)
@@ -536,9 +573,7 @@ public static class GEL_Parser
 
             var comparison = ParseComparison(compStr);
             if (!float.TryParse(valueStr, CultureInfo.InvariantCulture, out var threshold))
-            {
                 throw new GELParseException($"Invalid threshold value: '{valueStr}'");
-            }
             return new MarkerCondition(name, comparison, threshold);
         }
         return new MarkerCondition(token);
@@ -547,56 +582,38 @@ public static class GEL_Parser
     private static void ParseConditions(string conditions, Gene gene)
     {
         if (string.IsNullOrWhiteSpace(conditions))
-        {
             throw new GELParseException("Conditions cannot be empty");
-        }
 
-        // Check for unclosed brackets
         if (conditions.Count(c => c == '[') != conditions.Count(c => c == ']'))
-        {
             throw new GELParseException("Unclosed brackets found in conditions");
-        }
 
-        // Extract content between brackets
-        // Groups: [1]=content, [2]=range, [3]=probability morphogen (Mbase), [4]=movement dir, [5]=movement target
         var bracketMatches = Regex.Matches(conditions, @"\[(.*?)\](?:(\d+))?(?:\((\w+)\))?(?:([<>])(\w+))?");
         if (bracketMatches.Count == 0)
-        {
             throw new GELParseException("No valid condition sets found. Expected format: [markers] or [markers]range or [markers](Morphogen)");
-        }
 
         foreach (Match bracketMatch in bracketMatches)
         {
             var conditionSet = new ConditionSet();
             var markers = bracketMatch.Groups[1].Value.Split([" "], StringSplitOptions.RemoveEmptyEntries);
 
-            // Parse range if present
             if (bracketMatch.Groups[2].Success)
             {
                 if (!int.TryParse(bracketMatch.Groups[2].Value, out var range))
-                {
                     throw new GELParseException($"Invalid range value: '{bracketMatch.Groups[2].Value}'. Range must be a positive integer");
-                }
                 conditionSet.Range = range;
             }
 
-            // Parse probability morphogen if present: [conditions](Mbase) → Die(1 - concentration)
             if (bracketMatch.Groups[3].Success)
             {
                 if (gene.OutputMarker != "APOP")
-                {
                     throw new GELParseException("Probability morphogen syntax (Morphogen) is only allowed when output marker is APOP");
-                }
                 conditionSet.ProbabilityMorphogen = bracketMatch.Groups[3].Value;
             }
 
-            // Parse movement target if present
             if (bracketMatch.Groups[5].Success)
             {
                 if (gene.OutputMarker != "MOVE")
-                {
                     throw new GELParseException("Movement syntax is only allowed when output marker is MOVE");
-                }
                 var targetMarker = bracketMatch.Groups[5].Value;
                 ValidateMarker(targetMarker);
                 conditionSet.MovementTarget = targetMarker;
@@ -608,75 +625,34 @@ public static class GEL_Parser
             {
                 if (marker.StartsWith("n("))
                 {
-                    // throw error if there is no closing bracket
                     if (!marker.EndsWith(')'))
-                    {
                         throw new GELParseException("Invalid neighbor condition. Expected format: n(count)");
-                    }
-                    // Parse neighbor condition
                     var countStr = marker[2..^1];
                     ComparisonType comparisonType = ComparisonType.Equals;
-                    if (countStr.StartsWith("<="))
-                    {
-                        comparisonType = ComparisonType.LessThanOrEqual;
-                    }
-                    else if (countStr.StartsWith(">="))
-                    {
-                        comparisonType = ComparisonType.GreaterThanOrEqual;
-                    }
-                    else if (countStr.StartsWith('<'))
-                    {
-                        comparisonType = ComparisonType.LessThan;
-                    }
-                    else if (countStr.StartsWith('>'))
-                    {
-                        comparisonType = ComparisonType.GreaterThan;
-                    }
-                    else if (countStr.StartsWith('!'))
-                    {
-                        comparisonType = ComparisonType.NotEquals;
-                    }
+                    if (countStr.StartsWith("<=")) comparisonType = ComparisonType.LessThanOrEqual;
+                    else if (countStr.StartsWith(">=")) comparisonType = ComparisonType.GreaterThanOrEqual;
+                    else if (countStr.StartsWith('<')) comparisonType = ComparisonType.LessThan;
+                    else if (countStr.StartsWith('>')) comparisonType = ComparisonType.GreaterThan;
+                    else if (countStr.StartsWith('!')) comparisonType = ComparisonType.NotEquals;
                     countStr = countStr.TrimStart(['!', '=', '<', '>']);
                     if (!int.TryParse(countStr, out var count) || count < 0 || count > 6)
-                    {
                         throw new GELParseException($"Invalid neighbor count: '{countStr}'. Must be an integer between 0 and 6");
-                    }
                     conditionSet.AddNeighborCondition(count, comparisonType);
                 }
                 else if (marker.StartsWith("t("))
                 {
                     if (!marker.EndsWith(')'))
-                    {
                         throw new GELParseException("Invalid clock condition. Expected format: t(>5)");
-                    }
-                    // Parse clock/age condition
                     var countStr = marker[2..^1];
                     ComparisonType comparisonType = ComparisonType.Equals;
-                    if (countStr.StartsWith("<="))
-                    {
-                        comparisonType = ComparisonType.LessThanOrEqual;
-                    }
-                    else if (countStr.StartsWith(">="))
-                    {
-                        comparisonType = ComparisonType.GreaterThanOrEqual;
-                    }
-                    else if (countStr.StartsWith('<'))
-                    {
-                        comparisonType = ComparisonType.LessThan;
-                    }
-                    else if (countStr.StartsWith('>'))
-                    {
-                        comparisonType = ComparisonType.GreaterThan;
-                    }
-                    else if (countStr.StartsWith('!'))
-                    {
-                        comparisonType = ComparisonType.NotEquals;
-                    }
+                    if (countStr.StartsWith("<=")) comparisonType = ComparisonType.LessThanOrEqual;
+                    else if (countStr.StartsWith(">=")) comparisonType = ComparisonType.GreaterThanOrEqual;
+                    else if (countStr.StartsWith('<')) comparisonType = ComparisonType.LessThan;
+                    else if (countStr.StartsWith('>')) comparisonType = ComparisonType.GreaterThan;
+                    else if (countStr.StartsWith('!')) comparisonType = ComparisonType.NotEquals;
                     countStr = countStr.TrimStart(['!', '=', '<', '>']);
                     if (!int.TryParse(countStr, out var count) || count < 0)
-                    {
                         throw new GELParseException($"Invalid clock value: '{countStr}'. Must be a non-negative integer");
-                    }
                     conditionSet.AddClockCondition(count, comparisonType);
                 }
                 else if (marker.StartsWith("ns("))
@@ -687,9 +663,8 @@ public static class GEL_Parser
                     var nsMatch = Regex.Match(inner, @"^(\w+)(?:([<>=!]+)(\d+))?$");
                     if (!nsMatch.Success)
                         throw new GELParseException($"Invalid typed neighbor condition format: '{inner}'");
-                    var typeStr = nsMatch.Groups[1].Value;
-                    if (!Enum.TryParse<CellType>(typeStr, true, out var nsCellType) || nsCellType == CellType.None)
-                        throw new GELParseException($"Unknown cell type in ns() condition: '{typeStr}'. Valid types: STEM, FLESH, SKIN");
+                    var typeStr = nsMatch.Groups[1].Value.ToUpperInvariant();
+                    // No enum validation needed - any string is a valid type name
                     var nsComp = ComparisonType.GreaterThanOrEqual;
                     var nsCount = 1;
                     if (nsMatch.Groups[2].Success)
@@ -697,22 +672,21 @@ public static class GEL_Parser
                         nsComp = ParseComparison(nsMatch.Groups[2].Value);
                         nsCount = int.Parse(nsMatch.Groups[3].Value);
                     }
-                    conditionSet.TypedNeighborConditions.Add((nsCellType, nsCount, nsComp));
+                    conditionSet.TypedNeighborConditions.Add((typeStr, nsCount, nsComp));
                 }
                 else if (marker.StartsWith("is(") || marker.StartsWith("!is("))
                 {
                     bool negated = marker.StartsWith("!");
                     var typeStr = negated ? marker[4..^1] : marker[3..^1];
-                    if (!Enum.TryParse<CellType>(typeStr, true, out var cellType) || cellType == CellType.None)
-                        throw new GELParseException($"Unknown cell type in is() condition: '{typeStr}'. Valid types: STEM, FLESH, SKIN");
+                    typeStr = typeStr.ToUpperInvariant();
+                    // No enum validation - any string is valid
                     if (negated)
-                        conditionSet.InhibitedSelfTypes.Add(cellType);
+                        conditionSet.InhibitedSelfTypes.Add(typeStr);
                     else
-                        conditionSet.SelfTypeChecks.Add(cellType);
+                        conditionSet.SelfTypeChecks.Add(typeStr);
                 }
                 else if (marker.StartsWith("!"))
                 {
-                    // Parse inhibited marker (with optional threshold)
                     var markerToken = marker[1..];
                     var mc = ParseMarkerWithOptionalThreshold(markerToken);
                     ValidateMarker(mc.MarkerName);
@@ -720,7 +694,6 @@ public static class GEL_Parser
                 }
                 else
                 {
-                    // Parse active marker (with optional threshold)
                     var mc = ParseMarkerWithOptionalThreshold(marker);
                     ValidateMarker(mc.MarkerName);
                     conditionSet.AddMarker(mc);

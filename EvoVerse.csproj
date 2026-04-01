@@ -1,4 +1,8 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <Compile Remove="EvoVerse.Tests/**" />
+  </ItemGroup>
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -9,7 +13,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="encog-dotnet-core" Version="3.4.0" />
     <PackageReference Include="raylib-cs" Version="7.0.1" />
     <PackageReference Include="RlImGui-cs" Version="3.1.0" />
   </ItemGroup>

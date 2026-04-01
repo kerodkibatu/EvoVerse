@@ -1,212 +1,137 @@
 using System.Numerics;
 using Raylib_cs;
-using System.Linq;
-using System.Security.Cryptography;
 
 namespace EvoVerse;
 
 /// <summary>
-/// The possible types of cells in the simulation.
+/// Visual and behavioral definition for a cell type.
+/// STEM is the only built-in. All others are defined in GEL files via TYPE declarations.
 /// </summary>
-public enum CellType
+public class CellTypeDefinition
 {
-    None,
-    Stem,
-    Flesh,
-    Skin
+    public string Name { get; set; } = "";
+    public Color MainColor { get; set; } = new(180, 180, 180, 150);
+    public Color NucleusColor { get; set; } = new(150, 150, 150, 150);
+    public Color MembraneColor { get; set; } = new(200, 200, 200, 150);
+    public float NucleusRadiusRatio { get; set; } = 0.2f;
+    public float MembraneThickness { get; set; } = 3.0f;
 }
 
 /// <summary>
-/// Base abstract class for all cells in the simulation.
+/// Registry of all known cell types. STEM is always registered.
+/// Custom types are registered when a GEL file is parsed.
 /// </summary>
-public abstract class Cell
+public static class CellTypeRegistry
 {
-    // GUID
-    public Guid Id { get; private set; } = Guid.NewGuid();
+    public const string None = "NONE";
+    public const string Stem = "STEM";
 
-    // Clock(basically the age of the cell)
-    public int Clock { get; set; } = 0;
+    private static readonly Dictionary<string, CellTypeDefinition> _types = new(StringComparer.OrdinalIgnoreCase);
 
-    // Timer When a timer is active, it will emit a marker at the end of the timer
-    // There are multiple timers, so we need a tuple of (marker, time) and
-    // when the timer is up, it will be removed from the list and emit the marker
-    public List<(string marker, int time)> Timers { get; set; } = [];
-    // Common properties
-    // Position now has a protected set, accessible internally for movement
-    public Hex Position { get; protected set; }
-    public abstract CellType Type { get; }
-
-    // Genome property
-    public Genome Genome { get; protected set; } = [];
-
-    // Time-related properties for animations and lifecycle
-    protected float CreationTime { get; private set; }
-
-    // Cell rendering properties
-    protected const int VertexCount = 16;
-    protected const int VertexCountPerformance = 5;
-    protected const float AttachmentStrength = 0.11f;
-    protected const float PulsationAmount = 0.03f;
-    protected const float PulsationSpeed = 0.7f;
-
-    // Death properties
-    public bool IsDead { get; private set; } = false;
-
-    // Constructor
-    protected Cell(Hex position, Genome? genome = null)
+    static CellTypeRegistry()
     {
+        RegisterBuiltins();
+    }
+
+    private static void RegisterBuiltins()
+    {
+        Register(new CellTypeDefinition
+        {
+            Name = Stem,
+            MainColor = new Color(210, 200, 180, 150),
+            NucleusColor = new Color(200, 190, 170, 150),
+            MembraneColor = new Color(220, 210, 190, 150),
+            NucleusRadiusRatio = 0.3f,
+            MembraneThickness = 5.0f,
+        });
+    }
+
+    public static void Register(CellTypeDefinition def)
+    {
+        _types[def.Name.ToUpperInvariant()] = def;
+    }
+
+    public static CellTypeDefinition? Get(string name)
+    {
+        return _types.GetValueOrDefault(name.ToUpperInvariant());
+    }
+
+    public static bool Exists(string name) => _types.ContainsKey(name.ToUpperInvariant());
+
+    public static IEnumerable<string> AllTypeNames => _types.Keys;
+
+    /// <summary>
+    /// Clear all types and re-register builtins. Call before loading a new GEL file.
+    /// </summary>
+    public static void Reset()
+    {
+        _types.Clear();
+        RegisterBuiltins();
+    }
+}
+
+/// <summary>
+/// A cell in the simulation. Type is a string identifier resolved through CellTypeRegistry.
+/// </summary>
+public class Cell
+{
+    public Guid Id { get; private set; } = Guid.NewGuid();
+    public int Clock { get; set; } = 0;
+    public List<(string marker, int time)> Timers { get; set; } = [];
+    public Hex Position { get; protected set; }
+    public string Type { get; private set; }
+    public Genome Genome { get; protected set; } = [];
+    public bool IsDead { get; private set; } = false;
+    public bool ShouldDivide { get; set; } = true;
+
+    // Rendering
+    protected float CreationTime { get; private set; }
+    private const int VertexCount = 16;
+    private const int VertexCountPerformance = 5;
+    private const float AttachmentStrength = 0.11f;
+    private const float PulsationAmount = 0.03f;
+    private const float PulsationSpeed = 0.7f;
+    private const float AnimationSpeedFactor = 0.5f;
+    private const float AnimationAmount = 0.01f;
+    private const float OffsetMagnitudeRange = 0.25f;
+
+    private readonly float _offsetMagnitude;
+    private readonly float _offsetAngle;
+    private readonly float _animationPhase;
+
+    public Cell(string type, Hex position, Genome? genome = null)
+    {
+        Type = type.ToUpperInvariant();
         Position = position;
         CreationTime = (float)Raylib.GetTime();
         Genome = genome ?? [];
+
+        int positionHash = Position.GetHashCode();
+        _offsetAngle = (float)(positionHash % 628) / 100.0f;
+        _offsetMagnitude = (float)Random.Shared.NextDouble() * OffsetMagnitudeRange;
+        _animationPhase = (float)Random.Shared.NextDouble() * 628;
     }
 
-    // Chance to die
     public void Die(float probability = 1)
     {
         if (Random.Shared.NextSingle() < probability)
-        {
             IsDead = true;
-        }
     }
 
-    // --- Drawing methods remain the same ---
-    public void Draw(HexLayout layout, float cellRadius, ICollection<Cell> neighbors)
-    {
-        (Vector2 center, Vector2[] vertices) =
-            CalculateCellShape(layout, cellRadius, neighbors);
-        DrawFilledCell(center, vertices);
-        DrawCellMembrane(vertices);
-        DrawCellInternals(center, cellRadius);
-    }
-    protected (Vector2 center, Vector2[] vertices) CalculateCellShape(HexLayout layout, float cellRadius, ICollection<Cell> neighbors)
-    {
-        // Get the center position in screen coordinates
-        Vector2 center = layout.HexToPixel(Position);
-
-        // Use lower vertex count if performance mode is enabled
-        int vertexCount = CONFIG.PerformanceMode ? VertexCountPerformance : VertexCount;
-        Vector2[] vertices = new Vector2[vertexCount];
-
-        // Keep track of which neighbor affects which vertices
-        Dictionary<Cell, List<int>> connections = new();
-
-        // Find neighboring cells
-        List<(Cell cell, Vector2 direction, float distance)> neighborData = new();
-        if (neighbors != null)
-        {
-            foreach (var neighbor in neighbors)
-            {
-                // Don't connect to self
-                if (ReferenceEquals(this, neighbor))
-                    continue;
-
-                if (AreNeighbors(Position, neighbor.Position))
-                {
-                    // Calculate direction to neighbor (normalized)
-                    Vector2 neighborPos = layout.HexToPixel(neighbor.Position);
-                    Vector2 direction = neighborPos - center;
-                    float distance = direction.Length();
-
-                    // Only consider true neighbors (not overlapping or too far cells)
-                    if (distance > 0 && distance < cellRadius * 3)
-                    {
-                        direction /= distance; // Normalize
-                        neighborData.Add((neighbor, direction, distance * 0.9f));
-                        connections[neighbor] = new List<int>();
-                    }
-                }
-            }
-        }
-
-        // Generate the cell shape vertices
-        for (int i = 0; i < vertexCount; i++)
-        {
-            // Base angle for this vertex
-            float angle = i * MathF.PI * 2.0f / vertexCount;
-
-            // If not in performance mode, calculate the base radius with a slight pulsation
-            float vertexRadius = cellRadius;
-            if (!CONFIG.PerformanceMode)
-            {
-                // Time-based animation for subtle membrane movement
-                float time = (float)Raylib.GetTime() - CreationTime;
-                float pulsation = 1.0f + MathF.Sin(time * PulsationSpeed + angle * 5) * PulsationAmount;
-                vertexRadius *= pulsation;
-            }
-
-            // Calculate basic vertex position
-            Vector2 basePos = new(
-                MathF.Cos(angle) * vertexRadius,
-                MathF.Sin(angle) * vertexRadius
-            );
-
-            // Adjust vertex position based on neighbors if not in performance mode
-            if (!CONFIG.PerformanceMode)
-            {
-                Vector2 finalPos = basePos;
-                Vector2 vertexDir = Vector2.Normalize(basePos); // Direction from center to vertex
-
-                foreach (var (neighbor, neighborDir, distance) in neighborData)
-                {
-                    // How much this vertex is facing toward the neighbor
-                    float alignment = Vector2.Dot(vertexDir, neighborDir);
-
-                    // Only pull vertices that face the neighbor somewhat
-                    if (alignment > 0.4f) // Increased threshold for more targeted attachment
-                    {
-                        // Pull stronger if vertex direction aligns well with neighbor direction
-                        float pullStrength = alignment * AttachmentStrength;
-
-                        // Pull the vertex toward the neighbor, but careful of overlapping too much
-                        // Use a sigmoid function to control how far the vertex can extend
-                        float maxPull = distance * 0.4f; // Maximum pull is 40% of the distance
-                        float pull = maxPull * (2.0f / (1.0f + MathF.Exp(-pullStrength * 5)) - 1.0f);
-
-                        // Apply the pull
-                        finalPos += neighborDir * pull;
-                    }
-                }
-
-                // Set final vertex position
-                vertices[i] = center + finalPos;
-            }
-            else
-            {
-                // Set final vertex position without adjustment for performance mode
-                vertices[i] = center + basePos;
-            }
-        }
-
-        return (center, vertices);
-    }
-    protected abstract void DrawFilledCell(Vector2 center, Vector2[] vertices);
-    protected abstract void DrawCellMembrane(Vector2[] vertices);
-    protected abstract void DrawCellInternals(Vector2 center, float cellRadius);
-    protected static bool AreNeighbors(Hex a, Hex b)
-    {
-        return a.Distance(b) == 1; // Simplified check using Hex.Distance
-    }
-
-
-    // --- Movement and Update Logic ---
+    internal void SetPosition(Hex newPosition) => Position = newPosition;
 
     /// <summary>
-    /// Method called by WorldGrid to update the cell's internal position state.
-    /// Should only be called by trusted grid logic (like WorldGrid.MoveCell).
+    /// Change this cell's type (specialization). Irreversible in biology, but the engine allows it.
     /// </summary>
-    internal void SetPosition(Hex newPosition)
+    internal void Specialize(string newType)
     {
-        Position = newPosition;
+        Type = newType.ToUpperInvariant();
     }
 
-    /// <summary>
-    /// Update method called once per tick for each cell. Handles movement attempt and division check.
-    /// </summary>
-    /// <param name="grid">The world grid for interaction.</param>
-    /// <returns>A new Cell if division occurs, otherwise null.</returns>
-    public virtual List<(string,Hex,int)> Update(WorldGrid grid)
+    // --- Update Logic ---
+
+    public virtual List<(string, Hex, int)> Update(WorldGrid grid)
     {
-        // Check if we're still valid in the grid
         if (!CellExists(grid))
             return [];
         ShouldDivide = Clock != 0;
@@ -228,27 +153,23 @@ public abstract class Cell
         }
         return emittedMarkers;
     }
-    public bool ShouldDivide { get; private set; } = true;
-    public List<(string,Hex,int)> EvaluateGenome(WorldGrid grid)
+
+    public List<(string, Hex, int)> EvaluateGenome(WorldGrid grid)
     {
-        List<(string,Hex,int)> emittedMarkers = [];
+        List<(string, Hex, int)> emittedMarkers = [];
         foreach (var gene in Genome)
         {
             var activeConditions = gene.Evaluate(grid, this);
             foreach (var activeCondition in activeConditions)
             {
-                // Apply the condition
                 switch (gene.Function)
                 {
                     case GeneFunction.Morphology:
-                        // Emit the markers
                         emittedMarkers.Add((gene.OutputMarker, Position, activeCondition.Range));
                         break;
                     case GeneFunction.StartTimer:
                         if (!Timers.Any(t => t.marker == gene.OutputMarker))
-                        {
                             Timers.Add((gene.OutputMarker, activeCondition.Range));
-                        }
                         break;
                     case GeneFunction.Apoptosis:
                         float prob;
@@ -262,17 +183,15 @@ public abstract class Cell
                         ShouldDivide = false;
                         break;
                     case GeneFunction.Specialization:
-                        CellType? targetType = gene.OutputMarker switch
+                        // Specialization: only stem cells can differentiate
+                        if (Type == CellTypeRegistry.Stem)
                         {
-                            "SKIN" when Type == CellType.Stem => CellType.Skin,
-                            "FLESH" when Type == CellType.Stem => CellType.Flesh,
-                            _ => null
-                        };
-                        if (targetType.HasValue)
-                            grid.PlaceCell(Position, targetType.Value, Genome);
+                            var targetType = gene.OutputMarker.ToUpperInvariant();
+                            if (CellTypeRegistry.Exists(targetType))
+                                Specialize(targetType);
+                        }
                         break;
                     case GeneFunction.Movement:
-                        // Direction is determined by the condition
                         var direction = MorphogenManager.GetGradientAtHex(
                             Position,
                             activeCondition.MovementTarget!,
@@ -289,54 +208,21 @@ public abstract class Cell
     public bool CellExists(WorldGrid grid)
     {
         Cell? currentCellInGrid = grid.GetCell(Position);
-
         return currentCellInGrid != null && currentCellInGrid.Id == Id;
     }
 
-    /// <summary>
-    /// Attempts to move the cell to a randomly chosen adjacent empty hex.
-    /// </summary>
-    protected virtual void TryMoveRandomly(WorldGrid grid)
-    {
-        // Find available empty neighbors efficiently
-        var emptyNeighbors = GetEmptyNeighborHexes(grid);
-
-        if (emptyNeighbors.Count > 0)
-        {
-            // Pick a random empty neighbor
-            int randomIndex = Random.Shared.Next(emptyNeighbors.Count);
-            Hex targetHex = emptyNeighbors[randomIndex];
-
-            // Execute the move using the reliable grid method
-            // This internally checks if the target is *still* empty and handles position update.
-            grid.MoveCell(Position, targetHex);
-        }
-    }
-
-
-    /// <summary>
-    /// Checks conditions for division and returns a new cell if division occurs.
-    /// </summary>
     public virtual void TryDivide(WorldGrid grid)
     {
         if (Raylib.GetFPS() < CONFIG.MinFrameRate)
             return;
-        // Find empty neighbors at the *current* position
         var emptyNeighbors = GetEmptyNeighborHexes(grid);
-
         if (emptyNeighbors.Count > 0)
         {
-            // Pick a random empty neighbor for the new cell
             int randomIndex = Random.Shared.Next(emptyNeighbors.Count);
             Hex targetHex = emptyNeighbors[randomIndex];
-
-            // Check if the chosen target hex is *still* empty in the grid
-            // (Another cell might have moved there *this tick* after our move but before this check)
-            // This check is important but the primary check/resolution happens in UpdateCellDivision when adding.
             if (!grid.IsOccupied(targetHex))
             {
-                // Create the offspring
-                Cell newCell = CreateDivisionOffspring(targetHex);
+                var newCell = new Cell(Type, targetHex, [.. Genome]);
                 newCell.ShouldDivide = false;
                 Clock = 0;
                 grid.AddCell(newCell);
@@ -344,156 +230,141 @@ public abstract class Cell
         }
     }
 
-    /// <summary>
-    /// Gets a list of adjacent hexes that are within bounds and not occupied.
-    /// </summary>
     public List<Hex> GetEmptyNeighborHexes(WorldGrid grid)
     {
         List<Hex> emptyNeighbors = [];
         for (int i = 0; i < 6; i++)
         {
             Hex neighborHex = Position.Neighbor(i);
-            // Use WorldGrid.IsOccupied for a clear check
             if (grid.IsWithinBounds(neighborHex) && !grid.IsOccupied(neighborHex))
-            {
                 emptyNeighbors.Add(neighborHex);
-            }
         }
         return emptyNeighbors;
     }
-    // Abstract method for creating offspring remains the same
-    protected abstract Cell CreateDivisionOffspring(Hex targetPosition);
 
-    // Factory method remains the same
-    public static Cell? CreateCell(CellType type, Hex position, Genome? genome = null)
+    // --- Drawing ---
+
+    private CellTypeDefinition? _cachedDef;
+    private string? _cachedDefType;
+
+    private CellTypeDefinition GetDefinition()
     {
-        return type switch
+        if (_cachedDefType != Type)
         {
-            CellType.Stem => new StemCell(position, genome),
-            CellType.Flesh => new FleshCell(position, genome),
-            CellType.Skin => new SkinCell(position, genome),
-            _ => null
-        };
-    }
-}
-
-public abstract class BasicCell : Cell
-{
-    // Shared nucleus and animation properties
-    protected const float AnimationSpeedFactor = 0.5f; // Controls animation speed
-    protected const float AnimationAmount = 0.01f; // Controls animation magnitude
-    protected const float OffsetMagnitudeRange = 0.25f; // Offset by 25% of cell radius
-
-    // Properties for animation and offset
-    protected float offsetMagnitude;
-    protected float offsetAngle;
-    protected float animationPhase;
-
-    // Abstract properties for specific cell types to define
-    protected abstract float NucleusRadiusRatio { get; }
-    protected abstract Color MainColor { get; }
-    protected abstract Color NucleusColor { get; }
-    protected abstract Color MembraneColor { get; }
-    protected abstract float MembraneThickness { get; }
-
-    protected BasicCell(Hex position, Genome? genome = null) : base(position, genome)
-    {
-        // Calculate stable, position-dependent offset
-        int positionHash = Position.GetHashCode();
-        offsetAngle = (float)(positionHash % 628) / 100.0f; // Random angle between 0 and 2π
-        offsetMagnitude = (float)Random.Shared.NextDouble() * OffsetMagnitudeRange; // Random offset magnitude
-        animationPhase = (float)Random.Shared.NextDouble() * 628; // Random animation phase
+            _cachedDef = CellTypeRegistry.Get(Type);
+            _cachedDefType = Type;
+        }
+        return _cachedDef ?? new CellTypeDefinition { Name = Type };
     }
 
-    protected override void DrawFilledCell(Vector2 center, Vector2[] vertices)
+    public void Draw(HexLayout layout, float cellRadius, ICollection<Cell> neighbors)
     {
-        // Sort vertices in counterclockwise order around the center
+        var def = GetDefinition();
+        (Vector2 center, Vector2[] vertices) = CalculateCellShape(layout, cellRadius, neighbors);
+        DrawFilledCell(center, vertices, def.MainColor);
+        DrawCellMembrane(vertices, def.MembraneColor, def.MembraneThickness);
+        DrawCellInternals(center, cellRadius, def.NucleusColor, def.NucleusRadiusRatio);
+    }
+
+    private (Vector2 center, Vector2[] vertices) CalculateCellShape(HexLayout layout, float cellRadius, ICollection<Cell> neighbors)
+    {
+        Vector2 center = layout.HexToPixel(Position);
+        int vertexCount = CONFIG.PerformanceMode ? VertexCountPerformance : VertexCount;
+        Vector2[] vertices = new Vector2[vertexCount];
+
+        List<(Cell cell, Vector2 direction, float distance)> neighborData = new();
+        if (neighbors != null)
+        {
+            foreach (var neighbor in neighbors)
+            {
+                if (ReferenceEquals(this, neighbor)) continue;
+                if (AreNeighbors(Position, neighbor.Position))
+                {
+                    Vector2 neighborPos = layout.HexToPixel(neighbor.Position);
+                    Vector2 direction = neighborPos - center;
+                    float distance = direction.Length();
+                    if (distance > 0 && distance < cellRadius * 3)
+                    {
+                        direction /= distance;
+                        neighborData.Add((neighbor, direction, distance * 0.9f));
+                    }
+                }
+            }
+        }
+
+        for (int i = 0; i < vertexCount; i++)
+        {
+            float angle = i * MathF.PI * 2.0f / vertexCount;
+            float vertexRadius = cellRadius;
+
+            if (!CONFIG.PerformanceMode)
+            {
+                float time = (float)Raylib.GetTime() - CreationTime;
+                float pulsation = 1.0f + MathF.Sin(time * PulsationSpeed + angle * 5) * PulsationAmount;
+                vertexRadius *= pulsation;
+            }
+
+            Vector2 basePos = new(
+                MathF.Cos(angle) * vertexRadius,
+                MathF.Sin(angle) * vertexRadius
+            );
+
+            if (!CONFIG.PerformanceMode)
+            {
+                Vector2 finalPos = basePos;
+                Vector2 vertexDir = Vector2.Normalize(basePos);
+                foreach (var (_, neighborDir, distance) in neighborData)
+                {
+                    float alignment = Vector2.Dot(vertexDir, neighborDir);
+                    if (alignment > 0.4f)
+                    {
+                        float pullStrength = alignment * AttachmentStrength;
+                        float maxPull = distance * 0.4f;
+                        float pull = maxPull * (2.0f / (1.0f + MathF.Exp(-pullStrength * 5)) - 1.0f);
+                        finalPos += neighborDir * pull;
+                    }
+                }
+                vertices[i] = center + finalPos;
+            }
+            else
+            {
+                vertices[i] = center + basePos;
+            }
+        }
+        return (center, vertices);
+    }
+
+    private static void DrawFilledCell(Vector2 center, Vector2[] vertices, Color color)
+    {
         var sortedVertices = vertices.OrderByDescending(v => Math.Atan2(v.Y - center.Y, v.X - center.X));
-
-        // Create array of points for DrawTriangleFan
         Vector2[] points = new Vector2[sortedVertices.Count() + 2];
         points[0] = center;
         Array.Copy(sortedVertices.ToArray(), 0, points, 1, sortedVertices.Count());
         points[sortedVertices.Count() + 1] = sortedVertices.First();
-
-        // Draw triangle fan
-        Raylib.DrawTriangleFan(points, points.Length, MainColor);
+        Raylib.DrawTriangleFan(points, points.Length, color);
     }
 
-    protected override void DrawCellMembrane(Vector2[] vertices)
+    private static void DrawCellMembrane(Vector2[] vertices, Color color, float thickness)
     {
-        // Draw cell membrane as connected lines
         for (int i = 0; i < vertices.Length; i++)
-        {
-            Raylib.DrawLineEx(vertices[i], vertices[(i + 1) % vertices.Length], MembraneThickness, MembraneColor);
-        }
+            Raylib.DrawLineEx(vertices[i], vertices[(i + 1) % vertices.Length], thickness, color);
     }
 
-    protected override void DrawCellInternals(Vector2 center, float cellRadius)
+    private void DrawCellInternals(Vector2 center, float cellRadius, Color nucleusColor, float radiusRatio)
     {
-        // Calculate nucleus properties and position
-        float nucleusRadius = cellRadius * NucleusRadiusRatio;
+        float nucleusRadius = cellRadius * radiusRatio;
         float animationTime = (float)Raylib.GetTime() - CreationTime;
-        float animationFactor = MathF.Sin(animationTime * AnimationSpeedFactor + animationPhase) * AnimationAmount;
-
-        // Calculate nucleus offset
+        float animationFactor = MathF.Sin(animationTime * AnimationSpeedFactor + _animationPhase) * AnimationAmount;
         Vector2 animatedOffset = new(
-            MathF.Cos(offsetAngle + animationTime * AnimationSpeedFactor) * offsetMagnitude * (1.0f + animationFactor),
-            MathF.Sin(offsetAngle + animationTime * AnimationSpeedFactor) * offsetMagnitude * (1.0f + animationFactor)
+            MathF.Cos(_offsetAngle + animationTime * AnimationSpeedFactor) * _offsetMagnitude * (1.0f + animationFactor),
+            MathF.Sin(_offsetAngle + animationTime * AnimationSpeedFactor) * _offsetMagnitude * (1.0f + animationFactor)
         );
-
-        // Calculate nucleus position
         Vector2 nucleusCenter = new(
             center.X + (animatedOffset.X * cellRadius),
             center.Y + (animatedOffset.Y * cellRadius)
         );
-
-        // Draw nucleus
-        Raylib.DrawCircleV(nucleusCenter, nucleusRadius, NucleusColor);
+        Raylib.DrawCircleV(nucleusCenter, nucleusRadius, nucleusColor);
     }
 
-    // Create a new cell of the same type
-    protected override Cell CreateDivisionOffspring(Hex targetPosition)
-    {
-        // Use the factory method to create a new cell of the same type with the same genome
-        return Cell.CreateCell(Type, targetPosition, [.. Genome])!;
-    }
-}
-
-public class StemCell : BasicCell
-{
-    // Color constants
-    protected override Color MainColor => new(210, 200, 180, 150); // Washed out beige
-    protected override Color NucleusColor => new(200, 190, 170, 150); // Light beige
-    protected override Color MembraneColor => new(220, 210, 190, 150); // Soft beige with transparency
-    protected override float NucleusRadiusRatio => 0.3f;
-    protected override float MembraneThickness => 5.0f;
-
-    public override CellType Type => CellType.Stem;
-    public StemCell(Hex position, Genome? genome = null) : base(position, genome) { }
-}
-
-public class FleshCell : BasicCell
-{
-    // Color constants
-    protected override Color MainColor => new(220, 80, 60, 150); // Warm coral
-    protected override Color NucleusColor => new(160, 40, 30, 150); // Deep red
-    protected override Color MembraneColor => new(240, 120, 90, 150); // Soft orange
-    protected override float NucleusRadiusRatio => 0.14f;
-    protected override float MembraneThickness => 3.0f;
-    public FleshCell(Hex position, Genome? genome = null) : base(position, genome) { }
-    public override CellType Type => CellType.Flesh;
-}
-
-public class SkinCell : BasicCell
-{
-    // Color constants
-    protected override Color MainColor => new(0, 100, 0, 150); // Darker green
-    protected override Color NucleusColor => new(0, 80, 0, 150); // Darker green variant
-    protected override Color MembraneColor => new(0, 120, 0, 150); // Darker green with lighter shade
-    protected override float NucleusRadiusRatio => 0.2f;
-    protected override float MembraneThickness => 4.0f;
-
-    public override CellType Type => CellType.Skin;
-    public SkinCell(Hex position, Genome? genome = null) : base(position, genome) { }
+    private static bool AreNeighbors(Hex a, Hex b) => a.Distance(b) == 1;
 }

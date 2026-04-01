@@ -40,6 +40,14 @@ public class WorldGrid
         var cellsToDivide = new List<Hex>(_cells.Count); // Estimate all might divide
         List<(string,Hex,int)> emittedMarkers = [];
         var snapshot = _cells.ToArray();
+
+        // Fix: Shuffle iteration order to eliminate update-order bias (Fisher-Yates)
+        for (int i = snapshot.Length - 1; i > 0; i--)
+        {
+            int j = Random.Shared.Next(i + 1);
+            (snapshot[i], snapshot[j]) = (snapshot[j], snapshot[i]);
+        }
+
         for (int i = snapshot.Length - 1; i >= 0; i--)
         {
             var kvp = snapshot[i];
@@ -152,18 +160,18 @@ public class WorldGrid
 
     public Cell? GetCell(Hex hex) => _cells.TryGetValue(hex, out var cell) ? cell : null;
 
-    public CellType GetCellType(Hex hex) => GetCell(hex)?.Type ?? CellType.None;
+    public string GetCellType(Hex hex) => GetCell(hex)?.Type ?? CellTypeRegistry.None;
 
     public bool IsOccupied(Hex hex) => IsWithinBounds(hex) && _cells.TryGetValue(hex, out _);
 
-    public void PlaceCell(Hex hex, CellType cellType, Genome? genome = null)
+    public void PlaceCell(Hex hex, string cellType, Genome? genome = null)
     {
         if (!IsWithinBounds(hex)) return;
 
-        if (cellType == CellType.None)
+        if (string.Equals(cellType, CellTypeRegistry.None, StringComparison.OrdinalIgnoreCase))
             _cells.Remove(hex);
         else
-            _cells[hex] = Cell.CreateCell(cellType, hex, genome ?? _genome)!;
+            _cells[hex] = new Cell(cellType, hex, genome ?? _genome);
     }
 
     public bool AddCell(Cell cell)
@@ -230,15 +238,10 @@ public class WorldGrid
         // Read the GEL file
         _genome = GEL_Parser.ParseGEL(File.ReadAllText("TEST.GEL"));
         Console.WriteLine(_genome);
-        // Create all CellTypes once to ensure they are registered
-        foreach (var cellType in Enum.GetValues<CellType>())
-        {
-            _ = Cell.CreateCell(cellType, OriginHex);
-        }
         _cells.Clear();
-        _morphogenCache.Clear(); // Clear morphogen cache
+        _morphogenCache.Clear();
         MorphogenManager.Update();
-        PlaceCell(OriginHex, CellType.Stem, _genome);
+        PlaceCell(OriginHex, CellTypeRegistry.Stem, _genome);
     }
 
     // Add method to update morphogen cache

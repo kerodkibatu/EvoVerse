@@ -42,7 +42,7 @@ public static class MorphogenManager
         }
     }
 
-    public static void Emit(string morphogenID, Hex hex, int range = 0)
+    public static void Emit(string morphogenID, Hex hex, int range = 0, float concentration = 1f)
     {
         if (!Morphogens.Contains(morphogenID))
             throw new System.Exception($"Morphogen with ID {morphogenID} not found");
@@ -56,7 +56,7 @@ public static class MorphogenManager
         if (range == 0)
         {
             strengthDict.TryGetValue(hex, out float current);
-            strengthDict[hex] = current + 1f;
+            strengthDict[hex] = current + concentration;
             return;
         }
 
@@ -64,9 +64,31 @@ public static class MorphogenManager
         Hex.GetHexesInRange(hex, range, _emitBuffer);
         foreach (var h in _emitBuffer)
         {
-            float strength = CalculateStrength(hex, h, range);
+            float strength = CalculateStrength(hex, h, range) * concentration;
             strengthDict.TryGetValue(h, out float current);
             strengthDict[h] = current + strength;
+        }
+    }
+
+    public static void Subtract(string morphogenID, Hex hex, int range = 0, float amount = 1f)
+    {
+        if (!Morphogens.Contains(morphogenID) || !morphogenStrengthMap.TryGetValue(morphogenID, out var strengthDict))
+            return;
+
+        if (range == 0)
+        {
+            strengthDict.TryGetValue(hex, out float current);
+            strengthDict[hex] = Math.Max(0f, current - amount);
+            return;
+        }
+
+        _emitBuffer ??= [];
+        Hex.GetHexesInRange(hex, range, _emitBuffer);
+        foreach (var h in _emitBuffer)
+        {
+            float reduction = CalculateStrength(hex, h, range) * amount;
+            strengthDict.TryGetValue(h, out float current);
+            strengthDict[h] = Math.Max(0f, current - reduction);
         }
     }
 
@@ -239,15 +261,17 @@ public static class MorphogenManager
     public static IEnumerable<Hex> GetAffectedHexes()
     {
         var seen = new HashSet<Hex>();
+        var morphogenIds = morphogenStrengthMap.Keys.ToList();
 
-        foreach (var kvp in morphogenStrengthMap)
+        foreach (var morphogenId in morphogenIds)
         {
-            foreach (var hex in kvp.Value.Keys)
+            if (!morphogenStrengthMap.TryGetValue(morphogenId, out var strengthDict))
+                continue;
+            var hexes = strengthDict.Keys.ToArray();
+            foreach (var hex in hexes)
             {
                 if (seen.Add(hex))
-                {
                     yield return hex;
-                }
             }
         }
     }

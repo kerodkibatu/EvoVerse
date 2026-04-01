@@ -42,6 +42,33 @@ FLESH => @core [is(STEM) M7 n(6)]
 
 ---
 
+## Type Definitions
+
+`STEM` is the only built-in cell type. All other cell types must be declared with a `TYPE` line before they can be used as specialization targets.
+
+```
+TYPE FLESH color(220,80,60,150) nucleus(160,40,30,150,0.14) membrane(240,120,90,150,3.0)
+TYPE SKIN  color(0,100,0,150) nucleus(0,80,0,150,0.2) membrane(0,120,0,150,4.0)
+TYPE BONE  color(240,240,220,200) nucleus(200,200,180,180,0.15) membrane(255,255,240,200,6.0)
+```
+
+### Syntax
+
+```
+TYPE NAME color(r,g,b[,a]) [nucleus(r,g,b[,a][,radius_ratio])] [membrane(r,g,b[,a][,thickness])]
+```
+
+- **NAME** - identifier for the cell type (case-insensitive, stored as uppercase)
+- **color(r,g,b,a)** - main fill color (a defaults to 150)
+- **nucleus(r,g,b,a,ratio)** - nucleus color + radius ratio 0.0-1.0 (defaults: a=150, ratio=0.2)
+- **membrane(r,g,b,a,thickness)** - membrane color + line thickness (defaults: a=150, thickness=3.0)
+
+Only `color()` is required. Nucleus and membrane inherit sensible defaults if omitted.
+
+Types must be defined before any gene expression that references them (as specialization target, `is()`, or `ns()`). `STEM` cannot be redefined.
+
+---
+
 ## Markers
 
 ### Morphogen Markers
@@ -103,8 +130,8 @@ So at range 5: strength at distance 1 = 0.83, distance 3 = 0.50, distance 5 = 0.
 [!is(SKIN)]      // cell must NOT be a skin cell
 ```
 
-Valid types: `STEM`, `FLESH`, `SKIN`, `SPIKEBASE`, `SPIKE` (case-insensitive).
-Checks `cell.Type` directly — does not rely on morphogens.
+Any type name defined via `TYPE` or the built-in `STEM` (case-insensitive).
+Checks `cell.Type` directly, does not rely on morphogens.
 
 ### Neighbor Count — `n()`
 
@@ -129,7 +156,7 @@ Counts all occupied neighboring hexes regardless of cell type. Range: 0–6 (hex
 [ns(SPIKE=0)]        // no spike neighbors
 ```
 
-Counts only neighbors matching the specified cell type. Valid types: `STEM`, `FLESH`, `SKIN`, `SPIKEBASE`, `SPIKE`.
+Counts only neighbors matching the specified cell type. Any type defined via `TYPE` or the built-in `STEM`.
 If no comparison is given, defaults to `>=1`.
 
 ### Clock / Age — `t()`

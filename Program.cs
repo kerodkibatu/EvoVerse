@@ -2,6 +2,7 @@ using Raylib_cs;
 using RL = Raylib_cs.Raylib;
 using System.Numerics;
 using EvoVerse;
+using EvoVerse.Tools;
 using ImGuiNET;
 using rlImGui_cs;
 
@@ -13,6 +14,7 @@ const int TargetFps = 500;
 const int MapRadius = 25;
 const float MinZoom = 10f;
 const float MaxZoom = 300f;
+const float BottomBarHeight = 52f;
 
 // --- Colors ---
 Color BackgroundColor = new(220, 248, 255, 255); // AliceBlue - world area
@@ -20,8 +22,7 @@ Color OutsideWorldColor = new(180, 190, 200, 255); // Gray - outside circular wo
 Color HoverOutlineColor = new(100, 110, 120, 255);
 Color BorderColor = new(150, 150, 150, 40); // Semi-transparent gray for border hexes
 
-// --- Cell Type String Cache ---
-Dictionary<CellType, string> CellTypeStringCache = InitializeCellTypeStringCache();
+// --- Cell Type String Cache (no longer needed, Cell.Type is a string) ---
 
 // --- Fonts ---
 Font UIFont;
@@ -37,18 +38,20 @@ Hex HoveredHex;
 Vector2 HexSize = new(30, 30);
 Vector2 GridOrigin = new(ScreenWidth / 2f, ScreenHeight / 2f);
 Vector2 mousePos;
-CellType selectedCellType = CellType.Flesh; // Default selected cell type
-int brushSize = 0; // Radius of cells to place (0 = single cell)
 
 // --- Morphogen Visualization ---
 Dictionary<string, bool> MorphogenVisibility = new Dictionary<string, bool>();
 Dictionary<string, Color> MorphogenColors = new Dictionary<string, Color>();
 
 // --- Simulation State & Control ---
-SimulationState CurrentSimulationState = SimulationState.Editing;
+SimulationState CurrentSimulationState = SimulationState.Paused;
 bool StepRequested = false;
 float simulationSpeed = 10.0f; // Steps per second
 float timeSinceLastStep = 0.0f;
+
+// --- Tool System ---
+ToolManager ToolManager = new();
+ToolContext ToolContext = new();
 
 // --- Main Execution ---
 Run(ScreenWidth, ScreenHeight, WindowTitle);
@@ -68,6 +71,17 @@ void Init()
     }
     
     World.ClearAndReset(); // Start with a stem cell
+
+    var placeTool = new PlaceCellTool();
+    var morphogenTool = new MorphogenTool();
+    var inspectTool = new InspectTool();
+    if (MorphogenManager.Morphogens.Count > 0 && !MorphogenManager.Morphogens.Contains(morphogenTool.SelectedMorphogen))
+        morphogenTool.SelectedMorphogen = MorphogenManager.Morphogens.First();
+    ToolManager.Tools.Add(placeTool);
+    ToolManager.Tools.Add(morphogenTool);
+    ToolManager.Tools.Add(inspectTool);
+    ToolManager.ActiveTool = placeTool;
+
     RL.SetTargetFPS(TargetFps);
 
     // Load font for RayLib
@@ -166,6 +180,22 @@ void Update()
         timeSinceLastStep = 0; // Reset timer when single-stepping
     }
 
+    // Global shortcuts (skip when typing in text field)
+    if (!ImGui.GetIO().WantTextInput)
+    {
+        if (RL.IsKeyPressed(KeyboardKey.Space))
+        {
+            CurrentSimulationState = CurrentSimulationState == SimulationState.Running ? SimulationState.Paused : SimulationState.Running;
+            timeSinceLastStep = 0;
+        }
+        if (RL.IsKeyPressed(KeyboardKey.R))
+        {
+            World.ClearAndReset();
+            CurrentSimulationState = SimulationState.Paused;
+            timeSinceLastStep = 0;
+        }
+    }
+
     if (performUpdate)
     {
         // Update World
@@ -246,76 +276,7 @@ void UpdateGridLayout()
 
 void HandleUserInteraction()
 {
-    bool isLeftClick = RL.IsMouseButtonPressed(MouseButton.Left);
-    bool isShiftHeld = RL.IsKeyDown(KeyboardKey.LeftShift) || RL.IsKeyDown(KeyboardKey.RightShift);
-    bool isLeftClickHeldWithShift = isShiftHeld && RL.IsMouseButtonDown(MouseButton.Left);
-
-    if (isLeftClick || isLeftClickHeldWithShift)
-    {
-        PlaceCellIfValid(selectedCellType);
-    }
-    if (RL.IsMouseButtonDown(MouseButton.Right))
-    {
-        PlaceCellIfValid(CellType.None);
-    }
-    if (RL.IsKeyPressed(KeyboardKey.S))
-    {
-        if (World.IsWithinBounds(HoveredHex))
-        {
-            Cell? hoveredCell = World.GetCell(HoveredHex);
-            if (hoveredCell != null && hoveredCell.Type != CellType.None)
-            {
-                selectedCellType = hoveredCell.Type;
-            }
-        }
-    }
-}
-
-void PlaceCellIfValid(CellType cellType)
-{
-    if (!World.IsWithinBounds(HoveredHex)) return;
-
-    var hexesToModify = new List<Hex> { HoveredHex };
-    
-    // If brush size > 0, add neighbors within radius
-    if (brushSize > 0)
-    {
-        for (int q = -brushSize; q <= brushSize; q++)
-        {
-            for (int r = Math.Max(-brushSize, -q - brushSize); r <= Math.Min(brushSize, -q + brushSize); r++)
-            {
-                var hex = HoveredHex + new Hex(q, r);
-                if (World.IsWithinBounds(hex))
-                {
-                    hexesToModify.Add(hex);
-                }
-            }
-        }
-    }
-
-    foreach (var hex in hexesToModify)
-    {
-        bool canPlace = false;
-        Cell? existingCell = World.GetCell(hex);
-
-        if (cellType == CellType.None)
-        {
-            canPlace = true;
-        }
-        else if (existingCell == null)
-        {
-            canPlace = true;
-        }
-        else if (RL.IsKeyDown(KeyboardKey.LeftShift) && existingCell.Type != selectedCellType)
-        {
-            canPlace = true;
-        }
-
-        if (canPlace)
-        {
-            World.PlaceCell(hex, cellType);
-        }
-    }
+    ToolManager.HandleInput(HoveredHex, World);
 }
 
 void DrawHexOutline(Hex hex, Color color, float borderWidth = 2f)
@@ -375,7 +336,7 @@ void Draw()
     {
         if (World.Layout.IsInView(hex, screenW, screenH))
         {
-            if (World.GetCellType(hex) == CellType.None)
+            if (World.GetCellType(hex) == CellTypeRegistry.None)
             {
                 DrawHexOutline(hex, BorderColor);
             }
@@ -401,39 +362,33 @@ void Draw()
         }
     }
 
-    // --- Draw Hover Outline ---
+    // --- Draw Hover Preview (tool-specific) ---
     bool isHoverValid = !IsInputCapturedByUI() && World.IsWithinBounds(HoveredHex);
     if (isHoverValid)
     {
-        if (brushSize > 0)
-        {
-            for (int q = -brushSize; q <= brushSize; q++)
-            {
-                for (int r = Math.Max(-brushSize, -q - brushSize); r <= Math.Min(brushSize, -q + brushSize); r++)
-                {
-                    var hex = HoveredHex + new Hex(q, r);
-                    if (World.Layout.IsInView(hex, screenW, screenH))
-                    {
-                        var previewColor = HoverOutlineColor;
-                        previewColor.A = 100;
-                        DrawHexOutline(hex, previewColor, 2f);
-                    }
-                }
-            }
-        }
-        else
-        {
-            DrawHexOutline(HoveredHex, HoverOutlineColor, 5f);
-        }
+        ToolContext.Layout = World.Layout;
+        ToolContext.HexSize = HexSize;
+        ToolContext.ScreenW = screenW;
+        ToolContext.ScreenH = screenH;
+        ToolContext.MorphogenVisibility = MorphogenVisibility;
+        ToolContext.MorphogenColors = MorphogenColors;
+        // CellTypeStringCache removed - Cell.Type is already a string
+        ToolContext.UIFont = UIFont;
+        ToolContext.HoverOutlineColor = HoverOutlineColor;
+        ToolContext.BorderColor = BorderColor;
+        ToolContext.DrawHexOutline = DrawHexOutline;
+        ToolContext.DrawHexFill = DrawHexFill;
+        ToolManager.DrawPreview(HoveredHex, World, ToolContext);
+    }
 
-        if (RL.IsKeyDown(KeyboardKey.LeftAlt) || RL.IsKeyDown(KeyboardKey.RightAlt))
+    if (isHoverValid && (RL.IsKeyDown(KeyboardKey.LeftAlt) || RL.IsKeyDown(KeyboardKey.RightAlt)) && ToolManager.ActiveTool is not InspectTool)
         {
             Cell? hoveredCell = World.GetCell(HoveredHex);
             Vector2 tooltipPos = Layout.HexToPixel(HoveredHex);
 
             string tooltipText = $"Hex: {HoveredHex}\n";
             tooltipText += $"ID: {(hoveredCell != null ? hoveredCell.Id.ToString().Substring(0, 8) : "None")}\n";
-            tooltipText += $"Type: {(hoveredCell != null ? CellTypeStringCache[hoveredCell.Type] : "None")}\n";
+            tooltipText += $"Type: {(hoveredCell != null ? hoveredCell.Type : "None")}\n";
             if (hoveredCell != null)
             {
                 tooltipText += $"Clock: {hoveredCell.Clock}\n";
@@ -465,7 +420,6 @@ void Draw()
             RL.DrawRectangleLinesEx(tooltipRect, 1, Color.White);
             RL.DrawTextEx(UIFont, tooltipText, new Vector2(tooltipPos.X + 20 + padding, tooltipPos.Y - 20 + padding), 20, 1, Color.White);
         }
-    }
 
     // ---  Draw UI ---
     rlImGui.Begin();
@@ -483,16 +437,16 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
     // Get the main viewport
     ImGuiViewportPtr viewport = ImGui.GetMainViewport();
     Vector2 workSize = viewport.WorkSize;
-    
+    float panelHeight = workSize.Y - BottomBarHeight;
+
     // Calculate the desired width based on the ratio
     float panelWidth = workSize.X * xAxisRatio;
-    float panelHeight = workSize.Y; // Keep full screen height
 
-    // Set up docking
     ImGui.SetNextWindowPos(new Vector2(viewport.WorkPos.X, viewport.WorkPos.Y));
+    ImGui.SetNextWindowSize(new Vector2(panelWidth, panelHeight));
     ImGui.SetNextWindowSizeConstraints(
-        new Vector2(200, panelHeight), // Minimum width of 200 pixels, fixed height
-        new Vector2(workSize.X * 0.5f, panelHeight) // Maximum width of 50% screen width, fixed height
+        new Vector2(200, 200),
+        new Vector2(workSize.X * 0.5f, panelHeight)
     );
     
     // Enable docking and set the window to dock to the left
@@ -504,14 +458,6 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
     
     // Panel content (unchanged)
     ImGui.Text($"State: {CurrentSimulationState}");
-    ImGui.Separator();
-
-    ImGui.Text("Brush Size");
-    ImGui.SliderInt("##BrushSize", ref brushSize, 0, 5, brushSize == 0 ? "Single Cell" : $"Radius: {brushSize}");
-    if (ImGui.IsItemHovered())
-    {
-        ImGui.SetTooltip("Size of the brush area when placing cells.\nRadius 0 = single cell\nRadius 1 = 7 cells\nRadius 2 = 19 cells\nRadius 3 = 37 cells");
-    }
     ImGui.Separator();
 
     if (ImGui.BeginTable("MetricTable", 2, ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg))
@@ -541,7 +487,7 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
         ImGui.TableNextColumn(); ImGui.Text($"{(hoveredCell != null ? hoveredCell.Id.ToString().Substring(0, 8) : "None")}");
 
         ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Hover Type");
-        ImGui.TableNextColumn(); ImGui.Text($"{(hoveredCell != null ? CellTypeStringCache[hoveredCell.Type] : "None")}");
+        ImGui.TableNextColumn(); ImGui.Text($"{(hoveredCell != null ? hoveredCell.Type : "None")}");
 
         ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Total Cells");
         ImGui.TableNextColumn(); ImGui.Text($"{World.GetAllOccupiedHexes().Count()}");
@@ -550,17 +496,6 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
         ImGui.TableNextColumn(); ImGui.Text($"{World.MapRadius}");
 
         ImGui.EndTable();
-    }
-    ImGui.Separator();
-
-    ImGui.Text("Cell Type (Editing Mode)");
-    foreach (CellType cellType in Enum.GetValues(typeof(CellType)))
-    {
-        if (cellType == CellType.None) continue;
-        if (ImGui.RadioButton(CellTypeStringCache[cellType], selectedCellType == cellType))
-        {
-            selectedCellType = cellType;
-        }
     }
     ImGui.Separator();
 
@@ -696,10 +631,10 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
             ImGui.TableHeadersRow();
             ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Middle Mouse"); ImGui.TableNextColumn(); ImGui.Text("Pan Camera");
             ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Mouse Wheel"); ImGui.TableNextColumn(); ImGui.Text("Zoom Camera");
-            ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Left Click"); ImGui.TableNextColumn(); ImGui.Text("Place Cell (Editing Only)");
-            ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Shift + Left Click"); ImGui.TableNextColumn(); ImGui.Text("Overwrite Cell (Editing Only)");
-            ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("Right Click"); ImGui.TableNextColumn(); ImGui.Text("Remove Cell (Editing Only)");
-            ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text("S Key"); ImGui.TableNextColumn(); ImGui.Text("Sample Cell Type (Editing Only)");
+            foreach (var (control, action) in ToolManager.ActiveTool?.GetHelpEntries() ?? [])
+            {
+                ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.Text(control); ImGui.TableNextColumn(); ImGui.Text(action);
+            }
             ImGui.EndTable();
         }
     }
@@ -707,8 +642,6 @@ void DrawInfoPanel(bool isHoverValid, float xAxisRatio = 0.25f)
     ImGui.End();
     ImGui.PopStyleVar();
 }
-
-const float MorphogenPanelBottomMargin = 90f; // Space reserved for playback controls
 
 Vector2 ComputeGradientFromCache(Hex hex, string morphogen)
 {
@@ -781,7 +714,7 @@ void DrawMorphogenPanel(bool isHoverValid)
     Vector2 workSize = viewport.WorkSize;
 
     float panelWidth = workSize.X * xAxisRatio;
-    float panelHeight = workSize.Y - MorphogenPanelBottomMargin; // Leave room for playback controls
+    float panelHeight = workSize.Y - BottomBarHeight;
     Vector2 panelPos = new Vector2(workPos.X + workSize.X - panelWidth, workPos.Y);
 
     ImGui.SetNextWindowPos(panelPos);
@@ -868,102 +801,161 @@ void DrawMorphogenPanel(bool isHoverValid)
     ImGui.PopStyleVar(2);
 }
 
+void DrawVerticalSeparator(float height)
+{
+    Vector2 pos = ImGui.GetCursorScreenPos();
+    ImGui.Dummy(new Vector2(12, height));
+    float x = pos.X + 6;
+    ImGui.GetWindowDrawList().AddLine(
+        new Vector2(x, pos.Y),
+        new Vector2(x, pos.Y + height),
+        ImGui.GetColorU32(ImGuiCol.Separator),
+        1f);
+}
+
 void DrawSimulationControls()
 {
+    const float horizontalPadding = 24f;
+    const float verticalPadding = 8f;
+
     ImGuiWindowFlags window_flags = ImGuiWindowFlags.NoDecoration
                                   | ImGuiWindowFlags.NoDocking
-                                  | ImGuiWindowFlags.AlwaysAutoResize
                                   | ImGuiWindowFlags.NoSavedSettings
                                   | ImGuiWindowFlags.NoFocusOnAppearing
+                                  | ImGuiWindowFlags.NoScrollbar
                                   | ImGuiWindowFlags.NoNav;
 
-    float padding = 10.0f;
     ImGuiViewportPtr viewport = ImGui.GetMainViewport();
     Vector2 work_pos = viewport.WorkPos;
     Vector2 work_size = viewport.WorkSize;
-    Vector2 window_pos = new Vector2(work_pos.X + work_size.X - padding, work_pos.Y + work_size.Y - padding);
-    Vector2 window_pos_pivot = new Vector2(1.0f, 1.0f); // Pivot to bottom right
+    Vector2 barPos = new Vector2(work_pos.X, work_pos.Y + work_size.Y - BottomBarHeight);
+    Vector2 barSize = new Vector2(work_size.X, BottomBarHeight);
 
-    ImGui.SetNextWindowPos(window_pos, ImGuiCond.Always, window_pos_pivot);
-    ImGui.SetNextWindowBgAlpha(0.6f);
+    ImGui.SetNextWindowPos(barPos, ImGuiCond.Always);
+    ImGui.SetNextWindowSize(barSize, ImGuiCond.Always);
+
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(horizontalPadding, verticalPadding));
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 0f);
+    ImGui.PushStyleVar(ImGuiStyleVar.WindowBorderSize, 1f);
+    ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(10f, 3f)); // Tighter padding for compact buttons
+    ImGui.PushStyleColor(ImGuiCol.WindowBg, new Vector4(0.04f, 0.05f, 0.07f, 0.97f));
+    ImGui.PushStyleColor(ImGuiCol.Border, new Vector4(0.97f, 1f, 0.5f, 0.35f)); // Accent top border
 
     if (ImGui.Begin("SimulationControls", window_flags))
     {
-        // Play/Pause Button
-        string playPauseLabel = CurrentSimulationState == SimulationState.Running ? "Pause (II)" : "Play (>)";
-        if (ImGui.Button(playPauseLabel, new Vector2(100, 0)))
-        {
-            if (CurrentSimulationState == SimulationState.Running)
-            {
-                CurrentSimulationState = SimulationState.Paused;
-                timeSinceLastStep = 0; // Reset timer on pause
-            }
-            else if (CurrentSimulationState == SimulationState.Paused) // Only play if paused
-            {
-                CurrentSimulationState = SimulationState.Running;
-                timeSinceLastStep = 0; // Reset timer on play
-            }
-            else if (CurrentSimulationState == SimulationState.Editing)
-            {
-                CurrentSimulationState = SimulationState.Running;
-                timeSinceLastStep = 0; // Reset timer on play
-            }
-        }
-        ImGui.SameLine();
+        float buttonHeight = 28f;
 
-        // History Controls
-        ImGui.BeginDisabled(CurrentSimulationState == SimulationState.Editing || World.GetCurrentHistoryIndex() <= 0);
-        if (ImGui.Button("<", new Vector2(60, 0)))
+        ToolContext.Layout = World.Layout;
+        ToolContext.HexSize = HexSize;
+        ToolContext.ScreenW = (int)work_size.X;
+        ToolContext.ScreenH = (int)work_size.Y;
+        ToolContext.MorphogenVisibility = MorphogenVisibility;
+        ToolContext.MorphogenColors = MorphogenColors;
+        // CellTypeStringCache removed - Cell.Type is already a string
+        ToolContext.UIFont = UIFont;
+        ToolContext.HoverOutlineColor = HoverOutlineColor;
+        ToolContext.BorderColor = BorderColor;
+
+        ToolManager.HandleNumberKeys();
+        for (int i = 0; i < ToolManager.Tools.Count; i++)
         {
+            var tool = ToolManager.Tools[i];
+            bool selected = ToolManager.ActiveTool == tool;
+            if (selected)
+                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.2f, 0.35f, 0.2f, 1f));
+            if (i > 0) ImGui.SameLine(0, 2);
+            if (ImGui.Button(tool.Name, new Vector2(0, buttonHeight)))
+                ToolManager.ActiveTool = tool;
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip($"Right-click for options");
+            Vector2 btnMin = ImGui.GetItemRectMin();
+            Vector2 btnMax = ImGui.GetItemRectMax();
+            if (ImGui.BeginPopupContextItem($"ToolConfig_{i}"))
+            {
+                ImGui.SetNextWindowPos(new Vector2(btnMin.X, btnMin.Y), ImGuiCond.Appearing, new Vector2(0, 1));
+                ImGui.SetNextWindowSize(new Vector2(280, -1), ImGuiCond.FirstUseEver);
+                Vector2 popupMin = ImGui.GetWindowPos();
+                Vector2 popupMax = popupMin + ImGui.GetWindowSize();
+                Vector2 mouse = ImGui.GetIO().MousePos;
+                bool mouseOverButton = mouse.X >= btnMin.X && mouse.X <= btnMax.X && mouse.Y >= btnMin.Y && mouse.Y <= btnMax.Y;
+                bool mouseOverPopup = mouse.X >= popupMin.X && mouse.X <= popupMax.X && mouse.Y >= popupMin.Y && mouse.Y <= popupMax.Y;
+                if (!mouseOverButton && !mouseOverPopup)
+                    ImGui.CloseCurrentPopup();
+                ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(12, 10));
+                ImGui.Text($"{tool.Name} ({tool.ShortcutHint})");
+                ImGui.Separator();
+                tool.DrawOptions(ToolContext);
+                ImGui.PopStyleVar();
+                ImGui.EndPopup();
+            }
+            if (selected) ImGui.PopStyleColor();
+        }
+        ImGui.SameLine(0, 16);
+
+        DrawVerticalSeparator(buttonHeight);
+        ImGui.SameLine(0, 16);
+
+        // Reset
+        if (ImGui.Button("Reset", new Vector2(60, buttonHeight)))
+        {
+            World.ClearAndReset();
+            CurrentSimulationState = SimulationState.Paused;
+            timeSinceLastStep = 0;
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Reset simulation (R)");
+        ImGui.SameLine(0, 20);
+
+        DrawVerticalSeparator(buttonHeight);
+        ImGui.SameLine(0, 16);
+
+        // Transport: Play/Pause, Step back, Step forward
+        bool isRunning = CurrentSimulationState == SimulationState.Running;
+        if (isRunning)
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.2f, 0.35f, 0.15f, 1f));
+        string playPauseLabel = isRunning ? "Pause" : "Play";
+        if (ImGui.Button(playPauseLabel, new Vector2(56, buttonHeight)))
+        {
+            CurrentSimulationState = isRunning ? SimulationState.Paused : SimulationState.Running;
+            timeSinceLastStep = 0;
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(isRunning ? "Pause (Space)" : "Run (Space)");
+        if (isRunning) ImGui.PopStyleColor();
+        ImGui.SameLine(0, 4);
+
+        ImGui.BeginDisabled(World.GetCurrentHistoryIndex() <= 0);
+        if (ImGui.Button("|<", new Vector2(36, buttonHeight)))
             World.StepBack();
-        }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Step back one simulation step");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Step back");
         ImGui.EndDisabled();
-        ImGui.SameLine();
-        // Step Button
-        ImGui.BeginDisabled(CurrentSimulationState == SimulationState.Editing); // Can step when paused or running
-        if (ImGui.Button(">", new Vector2(60, 0)))
-        {
+        ImGui.SameLine(0, 2);
+
+        if (ImGui.Button("|>", new Vector2(36, buttonHeight)))
             StepRequested = true;
-        }
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Execute one simulation step\n(Will pause if running)");
-        ImGui.EndDisabled();
-        ImGui.SameLine();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Step forward (pauses if running)");
+        ImGui.SameLine(0, 16);
 
+        DrawVerticalSeparator(buttonHeight);
+        ImGui.SameLine(0, 16);
 
-        // Edit/Simulate Toggle Button
-        string editModeLabel = CurrentSimulationState == SimulationState.Editing ? "Sim" : "Edit";
-        if (ImGui.Button(editModeLabel, new Vector2(80, 0)))
-        {
-            if (CurrentSimulationState == SimulationState.Editing)
-            {
-                CurrentSimulationState = SimulationState.Paused; // Start simulation in paused state
-                timeSinceLastStep = 0;
-            }
-            else // Current state is Paused or Running
-            {
-                CurrentSimulationState = SimulationState.Editing;
-                World.ClearAndReset(); // Reset grid when returning to edit mode
-                timeSinceLastStep = 0; // Reset timer when going to edit mode
-            }
-        }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                CurrentSimulationState == SimulationState.Editing ?
-                "Switch to Simulation Mode (Paused)" :
-                "Return to Editing Mode (Simulation stops)");
-        ImGui.SameLine();
+        // Speed
+        ImGui.AlignTextToFramePadding();
+        ImGui.Text("Speed");
+        ImGui.SameLine(0, 6);
+        ImGui.SetNextItemWidth(120);
+        ImGui.SliderFloat("##Speed", ref simulationSpeed, 0.1f, 60f, "%.1f", ImGuiSliderFlags.Logarithmic);
+        if (simulationSpeed < 0.1f) simulationSpeed = 0.1f;
+        ImGui.SameLine(0, 16);
 
-        // Speed Slider
-        ImGui.PushItemWidth(150); // Make slider wider
-        ImGui.SliderFloat("Speed (Steps/Sec)", ref simulationSpeed, 0.1f, 60.0f, "%.1f", ImGuiSliderFlags.Logarithmic);
-        if (simulationSpeed < 0.1f) simulationSpeed = 0.1f; // Prevent zero/negative speed from slider interaction
-        ImGui.PopItemWidth();
+        DrawVerticalSeparator(buttonHeight);
+        ImGui.SameLine(0, 16);
 
-        // History Info
-        ImGui.Text($"History: {World.GetCurrentHistoryIndex() + 1}/{World.GetHistorySize()}");
+        // History
+        ImGui.Text($"Step {World.GetCurrentHistoryIndex() + 1} / {World.GetHistorySize()}");
     }
     ImGui.End();
+
+    ImGui.PopStyleColor(2);
+    ImGui.PopStyleVar(4);
 }
 
 void Run(int width, int height, string title)
@@ -981,14 +973,4 @@ void Run(int width, int height, string title)
     rlImGui.Shutdown();
     RL.UnloadFont(UIFont); // Unload font before closing
     RL.CloseWindow();
-}
-
-static Dictionary<CellType, string> InitializeCellTypeStringCache()
-{
-    var cache = new Dictionary<CellType, string>();
-    foreach (CellType cellType in Enum.GetValues(typeof(CellType)))
-    {
-        cache[cellType] = cellType.ToString();
-    }
-    return cache;
 }
