@@ -433,7 +433,8 @@ public static class GEL_Parser
                 if (gene.Function == GeneFunction.Specialization)
                     specializationTargets.Add(gene.OutputMarker);
 
-                if (gene.Function == GeneFunction.Morphology)
+                // Register morphogens and timer markers (timers emit their marker name when they fire)
+                if (gene.Function == GeneFunction.Morphology || gene.Function == GeneFunction.StartTimer)
                     MorphogenManager.RegisterMorphogen(gene.OutputMarker);
             }
             catch (GELParseException ex)
