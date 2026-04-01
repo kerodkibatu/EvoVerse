@@ -3,8 +3,15 @@
 //   M9=skin repair, M10=flesh proximity, MGI=germline inhibitor
 
 // ── Type definitions (STEM is built-in) ──────────────────────────────────────
-TYPE FLESH color(220,80,60,150) nucleus(160,40,30,150,0.14) membrane(240,120,90,150,3.0)
-TYPE SKIN  color(0,100,0,150) nucleus(0,80,0,150,0.2) membrane(0,120,0,150,4.0)
+TYPE FLESH:
+  color: 220, 80, 60, 150
+  nucleus: 160, 40, 30, 150, 0.14
+  membrane: 240, 120, 90, 150, 3.0
+
+TYPE SKIN:
+  color: 0, 100, 0, 150
+  nucleus: 0, 80, 0, 150, 0.2
+  membrane: 0, 120, 0, 150, 4.0
 
 // ── Variables ────────────────────────────────────────────────────────────────
 @boundaryStem = [is(STEM) M1 M6(<0.2)]

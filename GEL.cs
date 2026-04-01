@@ -339,18 +339,61 @@ public static class GEL_Parser
         var result = new List<string>();
         var variables = new Dictionary<string, string>();
 
-        foreach (var rawLine in lines)
+        for (int i = 0; i < lines.Length; i++)
         {
-            var line = rawLine;
+            var line = lines[i];
             var commentIndex = line.IndexOf("//");
             if (commentIndex >= 0)
                 line = line[..commentIndex];
 
-            line = line.Trim();
-            if (string.IsNullOrEmpty(line)) continue;
+            var trimmed = line.Trim();
+            if (string.IsNullOrEmpty(trimmed)) continue;
+
+            // TYPE block: "TYPE NAME:" followed by indented property lines
+            var typeMatch = Regex.Match(trimmed, @"^TYPE\s+(\w+)\s*:\s*$", RegexOptions.IgnoreCase);
+            if (typeMatch.Success)
+            {
+                var typeName = typeMatch.Groups[1].Value;
+                var props = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                // Consume indented lines (properties)
+                while (i + 1 < lines.Length)
+                {
+                    var nextRaw = lines[i + 1];
+                    var nextComment = nextRaw.IndexOf("//");
+                    if (nextComment >= 0)
+                        nextRaw = nextRaw[..nextComment];
+
+                    // Must be indented (starts with whitespace) and non-empty
+                    if (nextRaw.Length > 0 && (nextRaw[0] == ' ' || nextRaw[0] == '\t'))
+                    {
+                        var propLine = nextRaw.Trim();
+                        if (!string.IsNullOrEmpty(propLine))
+                        {
+                            // Parse "key: value"
+                            var colonIdx = propLine.IndexOf(':');
+                            if (colonIdx > 0)
+                            {
+                                var key = propLine[..colonIdx].Trim();
+                                var val = propLine[(colonIdx + 1)..].Trim();
+                                props[key] = val;
+                            }
+                        }
+                        i++;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                // Register the type immediately (so gene expressions can reference it)
+                ParseTypeBlock(typeName, props);
+                continue;
+            }
 
             // Variable definition: @name = value
-            var varMatch = Regex.Match(line, @"^@(\w+)\s*=\s*(.+)$");
+            var varMatch = Regex.Match(trimmed, @"^@(\w+)\s*=\s*(.+)$");
             if (varMatch.Success)
             {
                 var name = varMatch.Groups[1].Value;
@@ -360,7 +403,7 @@ public static class GEL_Parser
             }
 
             // Substitute @name references
-            line = Regex.Replace(line, @"@(\w+)", match =>
+            trimmed = Regex.Replace(trimmed, @"@(\w+)", match =>
             {
                 var name = match.Groups[1].Value;
                 if (!variables.ContainsKey(name))
@@ -368,7 +411,7 @@ public static class GEL_Parser
                 return variables[name];
             });
 
-            result.Add(line);
+            result.Add(trimmed);
         }
 
         return result.ToArray();
@@ -377,30 +420,19 @@ public static class GEL_Parser
     public static Genome ParseGenome(string[] expressions)
     {
         var genome = new Genome();
-        // Collected specialization targets to validate after parsing
         var specializationTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // TYPE blocks are already parsed during preprocessing. Only gene expressions remain.
         foreach (var expression in expressions)
         {
             try
             {
-                var trimmed = expression.Trim();
-
-                // TYPE declaration: TYPE NAME color(r,g,b,a) nucleus(r,g,b,a,ratio) membrane(r,g,b,a,thickness)
-                if (trimmed.StartsWith("TYPE ", StringComparison.OrdinalIgnoreCase))
-                {
-                    ParseTypeDeclaration(trimmed);
-                    continue;
-                }
-
-                var gene = ParseGeneExpression(trimmed);
+                var gene = ParseGeneExpression(expression.Trim());
                 genome.Add(gene);
 
-                // Track specialization targets
                 if (gene.Function == GeneFunction.Specialization)
                     specializationTargets.Add(gene.OutputMarker);
 
-                // Register non-function morphogens
                 if (gene.Function == GeneFunction.Morphology)
                     MorphogenManager.RegisterMorphogen(gene.OutputMarker);
             }
@@ -410,43 +442,34 @@ public static class GEL_Parser
             }
         }
 
-        // Validate all specialization targets have TYPE definitions
         foreach (var target in specializationTargets)
         {
             if (!CellTypeRegistry.Exists(target))
-                throw new GELParseException($"Specialization target '{target}' has no TYPE definition. Add: TYPE {target} color(r,g,b,a)");
+                throw new GELParseException(
+                    $"Specialization target '{target}' has no TYPE definition. Add:\nTYPE {target}:\n  color: r, g, b");
         }
 
         return genome;
     }
 
     /// <summary>
-    /// Parse a TYPE declaration line and register it in the CellTypeRegistry.
-    /// Syntax: TYPE NAME color(r,g,b[,a]) [nucleus(r,g,b[,a][,ratio])] [membrane(r,g,b[,a][,thickness])]
+    /// Parse a YAML-like TYPE block and register it in the CellTypeRegistry.
+    /// Called during preprocessing when "TYPE NAME:" header is encountered.
     /// </summary>
-    private static void ParseTypeDeclaration(string line)
+    private static void ParseTypeBlock(string typeName, Dictionary<string, string> props)
     {
-        // Extract the type name (first word after TYPE)
-        var match = Regex.Match(line, @"^TYPE\s+(\w+)\s*(.*)", RegexOptions.IgnoreCase);
-        if (!match.Success)
-            throw new GELParseException("Invalid TYPE syntax. Expected: TYPE NAME color(r,g,b[,a])");
-
-        var name = match.Groups[1].Value.ToUpperInvariant();
-        var propsStr = match.Groups[2].Value.Trim();
+        var name = typeName.ToUpperInvariant();
 
         if (name == CellTypeRegistry.Stem)
             throw new GELParseException("Cannot redefine STEM. It is a built-in type.");
 
         var def = new CellTypeDefinition { Name = name };
 
-        // Parse property blocks: color(...), nucleus(...), membrane(...)
-        var propMatches = Regex.Matches(propsStr, @"(\w+)\(([^)]+)\)");
-        foreach (Match pm in propMatches)
+        foreach (var (key, value) in props)
         {
-            var propName = pm.Groups[1].Value.ToLowerInvariant();
-            var args = pm.Groups[2].Value.Split(',').Select(s => s.Trim()).ToArray();
+            var args = value.Split(',').Select(s => s.Trim()).ToArray();
 
-            switch (propName)
+            switch (key.ToLowerInvariant())
             {
                 case "color":
                     def.MainColor = ParseColor(args, "color");
@@ -462,7 +485,7 @@ public static class GEL_Parser
                         def.MembraneThickness = thickness;
                     break;
                 default:
-                    throw new GELParseException($"Unknown TYPE property: '{propName}'. Valid: color, nucleus, membrane");
+                    throw new GELParseException($"Unknown TYPE property: '{key}'. Valid: color, nucleus, membrane");
             }
         }
 

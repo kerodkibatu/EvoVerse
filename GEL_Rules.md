@@ -44,26 +44,43 @@ FLESH => @core [is(STEM) M7 n(6)]
 
 ## Type Definitions
 
-`STEM` is the only built-in cell type. All other cell types must be declared with a `TYPE` line before they can be used as specialization targets.
+`STEM` is the only built-in cell type. All other cell types must be declared with a `TYPE` block before they can be used as specialization targets.
 
 ```
-TYPE FLESH color(220,80,60,150) nucleus(160,40,30,150,0.14) membrane(240,120,90,150,3.0)
-TYPE SKIN  color(0,100,0,150) nucleus(0,80,0,150,0.2) membrane(0,120,0,150,4.0)
-TYPE BONE  color(240,240,220,200) nucleus(200,200,180,180,0.15) membrane(255,255,240,200,6.0)
+TYPE FLESH:
+  color: 220, 80, 60, 150
+  nucleus: 160, 40, 30, 150, 0.14
+  membrane: 240, 120, 90, 150, 3.0
+
+TYPE SKIN:
+  color: 0, 100, 0, 150
+  nucleus: 0, 80, 0, 150, 0.2
+  membrane: 0, 120, 0, 150, 4.0
+
+TYPE BONE:
+  color: 240, 240, 220, 200
+  nucleus: 200, 200, 180, 180, 0.15
+  membrane: 255, 255, 240, 200, 6.0
 ```
 
 ### Syntax
 
 ```
-TYPE NAME color(r,g,b[,a]) [nucleus(r,g,b[,a][,radius_ratio])] [membrane(r,g,b[,a][,thickness])]
+TYPE NAME:
+  key: values
 ```
 
-- **NAME** - identifier for the cell type (case-insensitive, stored as uppercase)
-- **color(r,g,b,a)** - main fill color (a defaults to 150)
-- **nucleus(r,g,b,a,ratio)** - nucleus color + radius ratio 0.0-1.0 (defaults: a=150, ratio=0.2)
-- **membrane(r,g,b,a,thickness)** - membrane color + line thickness (defaults: a=150, thickness=3.0)
+The header line is `TYPE NAME:` (colon required). Property lines must be indented (spaces or tabs). The block ends at the first non-indented, non-empty line.
 
-Only `color()` is required. Nucleus and membrane inherit sensible defaults if omitted.
+### Properties
+
+| Property | Format | Defaults | Description |
+|---|---|---|---|
+| **color** | `r, g, b [, a]` | a=150 | Main cell fill color |
+| **nucleus** | `r, g, b [, a] [, radius_ratio]` | a=150, ratio=0.2 | Nucleus color and size (0.0-1.0 of cell radius) |
+| **membrane** | `r, g, b [, a] [, thickness]` | a=150, thickness=3.0 | Membrane outline color and pixel thickness |
+
+Only `color` is required. Nucleus and membrane inherit sensible defaults if omitted. All color values are 0-255 integers.
 
 Types must be defined before any gene expression that references them (as specialization target, `is()`, or `ns()`). `STEM` cannot be redefined.
 
