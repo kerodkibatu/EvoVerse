@@ -50,10 +50,10 @@ Conditions can check morphogen presence (`M1`), absence (`!M0`), concentration
 (type definitions, timers, gradient-based apoptosis, movement targeting) is in
 [`GEL_Rules.md`](GEL_Rules.md).
 
-![Close-up of the first ~30 ticks: the seed cell dividing into a stem mass](docs/early-growth.gif)
+![Close-up of the first ~10 ticks: a single seed cell dividing into a small stem cluster](docs/early-growth.gif)
 
-*The first few dozen ticks, up close: the seed divides into a stem mass before
-the boundary and differentiation genes kick in.*
+*The same run, zoomed in on the first few divisions: a single seed cell splits
+into a stem cluster before the boundary and differentiation genes kick in.*
 
 ## Running it
 
